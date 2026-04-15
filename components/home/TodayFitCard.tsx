@@ -3,17 +3,18 @@ import {
   View,
   Text,
   StyleSheet,
-  Image,
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
 } from 'react-native';
+import WardrobeItemImage from '../Closet/WardrobeItemImage';
 
 type WardrobeItem = {
   id: string;
   name?: string;
   type?: string;
   image_url: string;
+  image_path?: string;
 };
 
 type Props = {
@@ -56,7 +57,7 @@ export default function TodayFitCard({
   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.imageRow}>
     {outfit.map((item) => (
       <View key={item.id} style={styles.imageCard}>
-        <Image source={{ uri: item.image_url }} style={styles.image} />
+        <WardrobeItemImage item={item} style={styles.image} />
         <Text style={styles.label}>{item.name || item.type || 'Unnamed'}</Text>
       </View>
     ))}

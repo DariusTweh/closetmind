@@ -5,6 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { spacing, colors, radii, typography } from '../../lib/theme';
 
 export default function StyleMoodTags({ tags = [], onEdit }) {
+  const hasTags = Array.isArray(tags) && tags.length > 0;
+
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
@@ -14,13 +16,17 @@ export default function StyleMoodTags({ tags = [], onEdit }) {
         </TouchableOpacity>
       </View>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        {tags.map((tag) => (
-          <View key={tag} style={styles.tag}>
-            <Text style={styles.tagText}>{tag}</Text>
-          </View>
-        ))}
-      </ScrollView>
+      {hasTags ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          {tags.map((tag) => (
+            <View key={tag} style={styles.tag}>
+              <Text style={styles.tagText}>{tag}</Text>
+            </View>
+          ))}
+        </ScrollView>
+      ) : (
+        <Text style={styles.emptyText}>Add a few style tags so recommendations feel more personal.</Text>
+      )}
     </View>
   );
 }
@@ -48,6 +54,10 @@ const styles = StyleSheet.create({
     marginRight: spacing.sm,
   },
   tagText: {
+    fontSize: typography.label.fontSize,
+    color: colors.textSecondary,
+  },
+  emptyText: {
     fontSize: typography.label.fontSize,
     color: colors.textSecondary,
   },

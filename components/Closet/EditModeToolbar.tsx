@@ -4,74 +4,84 @@ import {
   TouchableOpacity,
   Text,
   StyleSheet,
-  Platform,
-  SafeAreaView,
 } from 'react-native';
-import { colors, spacing, radii, shadows, typography } from '../../lib/theme'; // adjust import path
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { typography } from '../../lib/theme';
 
-export default function EditModeToolbar({ onCancel, onDelete }) {
+export default function EditModeToolbar({
+  onCancel,
+  onDelete,
+  selectedCount = 0,
+}: {
+  onCancel: () => void;
+  onDelete: () => void;
+  selectedCount?: number;
+}) {
+  const insets = useSafeAreaInsets();
+  const deleteLabel = selectedCount === 1 ? 'Delete 1 Item' : `Delete ${selectedCount} Items`;
+
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <View style={[styles.safeArea, { bottom: 44 + insets.bottom }]}>
       <View style={styles.container}>
-        <TouchableOpacity style={styles.cancelButton} onPress={onCancel}>
+        <TouchableOpacity activeOpacity={0.84} style={styles.cancelButton} onPress={onCancel}>
           <Text style={styles.cancelText}>Cancel</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.deleteButton} onPress={onDelete}>
-          <Text style={styles.deleteText}>Delete</Text>
+        <TouchableOpacity activeOpacity={0.84} style={styles.deleteButton} onPress={onDelete}>
+          <Text style={styles.deleteText}>{deleteLabel}</Text>
         </TouchableOpacity>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
-
 
 const styles = StyleSheet.create({
   safeArea: {
     position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 70 : 60,
-    left: spacing.md,
-    right: spacing.md,
+    left: 0,
+    right: 0,
     zIndex: 10000,
-    backgroundColor: colors.background,
-    borderRadius: radii.md,
-    ...shadows.card,
+    backgroundColor: '#fafaff',
+    borderTopWidth: 1,
+    borderTopColor: '#daddd8',
   },
   container: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingBottom: Platform.OS === 'ios' ? spacing.md - 2 : spacing.sm + 2,
-    paddingTop: spacing.sm + 4,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: 14,
   },
   cancelButton: {
     flex: 1,
-    marginRight: spacing.sm,
-    backgroundColor: colors.backgroundAlt,
-    paddingVertical: spacing.md - 4,
-    borderRadius: radii.pill,
+    marginRight: 8,
+    backgroundColor: '#eef0f2',
+    borderWidth: 1,
+    borderColor: '#daddd8',
+    height: 46,
+    borderRadius: 14,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   deleteButton: {
     flex: 1,
-    marginLeft: spacing.sm,
-    backgroundColor: colors.accent,
-    paddingVertical: spacing.md - 4,
-    borderRadius: radii.pill,
+    marginLeft: 8,
+    backgroundColor: '#1c1c1c',
+    height: 46,
+    borderRadius: 14,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   cancelText: {
-    color: colors.textPrimary,
-    fontWeight: '600',
-    fontSize: 14,
+    color: 'rgba(28, 28, 28, 0.72)',
+    fontWeight: '700',
+    fontSize: 13.5,
     fontFamily: typography.fontFamily,
   },
   deleteText: {
-    color: colors.textOnAccent,
-    fontWeight: '600',
-    fontSize: 14,
+    color: '#fafaff',
+    fontWeight: '700',
+    fontSize: 13.5,
     fontFamily: typography.fontFamily,
   },
 });

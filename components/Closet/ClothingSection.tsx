@@ -11,14 +11,17 @@ import { colors, spacing, typography } from '../../lib/theme'; // adjust path as
 export default function ClothingSection({
   title,
   items,
-  editMode,
+  editMode = false,
   selectedItems = [],
-  toggleItemSelection,
-  setSelectedIndex,
+  toggleItemSelection = (_itemId) => {},
+  setSelectedIndex = (_index) => {},
 }) {
   return (
     <View style={styles.container}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        <View style={styles.titleDivider} />
+      </View>
 
       <FlatList
         horizontal
@@ -40,32 +43,35 @@ export default function ClothingSection({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.listContent}
       />
-
-      <View style={styles.divider} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm + 4,
-    paddingBottom: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xs + 2,
+    paddingBottom: spacing.md - 2,
     backgroundColor: colors.background,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: colors.textPrimary,
+    color: '#1c1c1c',
     fontFamily: typography.fontFamily,
-    marginBottom: spacing.sm + 4,
+    marginRight: spacing.sm + 2,
+  },
+  titleDivider: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#daddd8',
   },
   listContent: {
-    paddingRight: spacing.md,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: colors.border,
-    marginTop: spacing.lg,
+    paddingRight: spacing.sm + 6,
   },
 });

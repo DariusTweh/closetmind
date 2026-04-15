@@ -1,9 +1,10 @@
 
 import React, { useState } from 'react';
 import {
-  Modal, View, Text, TextInput, TouchableOpacity, Image,
+  Modal, View, Text, TextInput, TouchableOpacity,
   ScrollView, StyleSheet, Dimensions
 } from 'react-native';
+import WardrobeItemImage from '../WardrobeItemImage';
 import { colors, spacing, radii, typography } from '../../../lib/theme'; // adjust path if needed
 
 const { width } = Dimensions.get('window');
@@ -60,7 +61,7 @@ export default function EditItemModal({ visible, item, onClose, onSave }) {
 
           <Text style={styles.title}>Edit Item</Text>
 
-          <Image source={{ uri: item.image_url }} style={styles.image} />
+          <WardrobeItemImage item={item} style={styles.image} />
 
           <Text style={styles.label}>Name</Text>
           <TextInput style={styles.input} value={name} onChangeText={setName} />

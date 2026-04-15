@@ -1,26 +1,41 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   Dimensions,
   Easing,
   Image,
-  Modal,
+  InteractionManager,
+  Linking,
   Platform,
-  SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useRoute } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import * as FileSystem from 'expo-file-system/legacy';
-import { File, Directory, Paths } from 'expo-file-system/legacy';
+import { apiPost } from '../lib/api';
+import {
+  extractNormalizedTags,
+  type TaggingImportContext,
+  type TaggingResponse,
+} from '../lib/tagging';
+import {
+  buildExternalItemPayload,
+  buildWardrobeInsertPayloadFromExternalItem,
+  isExternalItemLike,
+} from '../lib/wardrobePayload';
+import { insertWardrobeItemWithCompatibility, uploadWardrobeImageBytes } from '../lib/wardrobeStorage';
 import { supabase } from '../lib/supabase';
 import ViewShot, { captureRef } from 'react-native-view-shot';
+import BrowserActionTray from '../components/browser/BrowserActionTray';
+import BrowserDrawer from '../components/browser/BrowserDrawer';
+import BrowserImagePickerModal from '../components/browser/BrowserImagePickerModal';
+import BrowserTopBar from '../components/browser/BrowserTopBar';
+import { getActiveStyleCanvasSession, type ActiveStyleCanvasSession } from '../lib/styleCanvasSession';
+import { browserItemsToCanvasItems, buildBrowserItemsFromImageUrls } from '../utils/styleCanvasAdapters';
 
 
 
@@ -28,12 +43,12 @@ const { width: SCREEN_W } = Dimensions.get('window');
 
 // ---------------- Theme ----------------
 const F = {
-  bg: '#FFFFFF',
-  text: '#111111',
-  muted: '#687076',
-  border: '#E6E8EB',
-  primary: '#0a84ff',
-  card: '#F6F7FB',
+  bg: '#fafaff',
+  text: '#1c1c1c',
+  muted: 'rgba(28, 28, 28, 0.72)',
+  border: '#daddd8',
+  primary: '#1c1c1c',
+  card: '#eef0f2',
 };
 
 // ---------------- Data ----------------
@@ -89,6 +104,36 @@ const POPULAR_SITES: { name: string; url: string; domain: string }[] = [
 
 const MIN_PIXELS = 220 * 220;
 const MAX_ASPECT = 3.5;
+const MAX_IMPORT_QUEUE_ITEMS = 12;
+const HTTP_URL_PATTERN = /^https?:\/\//i;
+const IP_HOST_PATTERN = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+const devLog = (...args: any[]) => {
+  if (__DEV__) {
+    console.log(...args);
+  }
+};
+
+function buildTagImportContext(importMeta: Record<string, any> = {}, sourceImageUrl?: string | null): TaggingImportContext {
+  return {
+    source_url: importMeta?.source_url ?? importMeta?.product_url ?? null,
+    product_url: importMeta?.product_url ?? importMeta?.source_url ?? null,
+    source_domain: importMeta?.source_domain ?? null,
+    retailer: importMeta?.retailer ?? importMeta?.retailer_name ?? null,
+    retailer_name: importMeta?.retailer_name ?? null,
+    brand: importMeta?.brand ?? null,
+    price: importMeta?.price ?? importMeta?.retail_price ?? null,
+    retail_price: importMeta?.retail_price ?? importMeta?.price ?? null,
+    currency: importMeta?.currency ?? null,
+    source_image_url: sourceImageUrl ?? importMeta?.source_image_url ?? null,
+    original_image_url:
+      importMeta?.original_image_url ?? sourceImageUrl ?? importMeta?.source_image_url ?? null,
+    source_type: importMeta?.source_type ?? null,
+    source_id: importMeta?.source_id ?? null,
+    external_product_id: importMeta?.external_product_id ?? null,
+    source_title: importMeta?.source_title ?? importMeta?.title ?? importMeta?.name ?? null,
+  };
+}
 
 // --------------- Helpers ---------------
 function looksLikeUrl(input: string) {
@@ -143,11 +188,47 @@ function safeHostname(url?: string) {
   try { return url ? new URL(url).hostname : undefined } catch { return undefined }
 }
 
+function buildImportQueueMessage(total: number) {
+  return `You can queue up to ${MAX_IMPORT_QUEUE_ITEMS} items at once. Using the first ${Math.min(total, MAX_IMPORT_QUEUE_ITEMS)}.`;
+}
+
+function capImportQueue(urls: string[], shouldAlert = false) {
+  const unique = Array.from(new Set((urls || []).filter(Boolean)));
+  if (shouldAlert && unique.length > MAX_IMPORT_QUEUE_ITEMS) {
+    Alert.alert('Import limit', buildImportQueueMessage(unique.length));
+  }
+  return unique.slice(0, MAX_IMPORT_QUEUE_ITEMS);
+}
+
+function getBrowserNavigationBlockReason(rawUrl?: string) {
+  const nextUrl = String(rawUrl || '').trim();
+  if (!nextUrl || nextUrl === 'about:blank' || nextUrl === 'about:srcdoc') return null;
+  if (!HTTP_URL_PATTERN.test(nextUrl)) {
+    return 'Only standard http(s) pages can be opened in the in-app browser.';
+  }
+
+  try {
+    const parsed = new URL(nextUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const isLocalLike = hostname === 'localhost' || hostname === '127.0.0.1' || IP_HOST_PATTERN.test(hostname);
+
+    if (!__DEV__ && isLocalLike) {
+      return 'Local and direct IP hosts are blocked in the production browser.';
+    }
+  } catch {
+    return 'This link could not be parsed.';
+  }
+
+  return null;
+}
+
 export default function ImportBrowserScreen({ navigation }: any) {
+  const route = useRoute<any>();
+  const routeInitialUrl = normalizeOrSearch(String(route?.params?.initialUrl || '').trim()) || POPULAR_SITES[0].url;
   // Web state
-  const [sourceUrl, setSourceUrl] = useState(POPULAR_SITES[0].url); 
-  const [currentUrl, setCurrentUrl] = useState(POPULAR_SITES[0].url); // WebView source of truth
-const [addressBarText, setAddressBarText] = useState(POPULAR_SITES[0].url); // what user is typing/seeing
+  const [sourceUrl, setSourceUrl] = useState(routeInitialUrl); 
+  const [currentUrl, setCurrentUrl] = useState(routeInitialUrl); // WebView source of truth
+const [addressBarText, setAddressBarText] = useState(routeInitialUrl); // what user is typing/seeing
 const [isEditingBar, setIsEditingBar] = useState(false);
 
   const [webLoading, setWebLoading] = useState(false);
@@ -160,17 +241,35 @@ const [canGoForward, setCanGoForward] = useState(false);
   // Images & modal
   const [webImages, setWebImages] = useState<string[]>([]);
   const [webSelected, setWebSelected] = useState<Record<string, boolean>>({});
-  const [webPageMeta, setWebPageMeta] = useState<{ url?: string; domain?: string; title?: string; price?: number | null; currency?: string | null }>({});
+  const [webPageMeta, setWebPageMeta] = useState<{
+    url?: string;
+    product_url?: string;
+    domain?: string;
+    title?: string;
+    price?: number | null;
+    currency?: string | null;
+    retailer?: string | null;
+    retailer_name?: string | null;
+    brand?: string | null;
+    source_id?: string | null;
+    external_product_id?: string | null;
+    source_type?: string | null;
+  }>({});
   
   // 🔹 NEW: anchor state
   const [anchorImage, setAnchorImage] = useState<string | null>(null);
   const [anchorUrl, setAnchorUrl] = useState<string | null>(null); // which page this anchor came from
   const [showPicker, setShowPicker] = useState(false);
+  const [anchorWasCleared, setAnchorWasCleared] = useState(false);
   const [filterProductish, setFilterProductish] = useState(true);
   const selectedList = useMemo(() => Object.keys(webSelected).filter((u) => webSelected[u]), [webSelected]);
   
   const [fabLoading, setFabLoading] = useState(false);
-  const [fabMenuVisible, setFabMenuVisible] = useState(false);
+  const [importQueueState, setImportQueueState] = useState<{ completed: number; total: number } | null>(null);
+  const [webErrorMessage, setWebErrorMessage] = useState<string | null>(null);
+  const [webErrorUrl, setWebErrorUrl] = useState<string | null>(null);
+  const [activeBrowserAction, setActiveBrowserAction] = useState<string | null>(null);
+  const [activeCanvasSession, setActiveCanvasSession] = useState<ActiveStyleCanvasSession | null>(null);
 
   // Drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -178,6 +277,47 @@ const [canGoForward, setCanGoForward] = useState(false);
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const DRAWER_W = Math.min(SCREEN_W * 0.82, 320);
   const screenshotRef = useRef<ViewShot>(null);
+  const activeBrowserActionRef = useRef<string | null>(null);
+
+  function closeBrowser() {
+    if (navigation?.canGoBack?.()) {
+      navigation.goBack();
+      return;
+    }
+    navigation.navigate('MainTabs', { screen: 'Closet' });
+  }
+
+  useEffect(() => {
+    let mounted = true;
+
+    const refreshActiveCanvas = async () => {
+      const session = await getActiveStyleCanvasSession();
+      if (mounted) {
+        setActiveCanvasSession(session);
+      }
+    };
+
+    void refreshActiveCanvas();
+
+    const unsubscribe = navigation?.addListener?.('focus', () => {
+      void refreshActiveCanvas();
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
+  }, [navigation]);
+
+  useEffect(() => {
+    const nextUrl = normalizeOrSearch(String(route?.params?.initialUrl || '').trim());
+    if (!nextUrl) return;
+    setSourceUrl(nextUrl);
+    setCurrentUrl(nextUrl);
+    setAddressBarText(nextUrl);
+    setWebErrorMessage(null);
+    setWebErrorUrl(null);
+  }, [route?.params?.initialUrl]);
 
   
   useEffect(() => {
@@ -284,15 +424,23 @@ const onWebMessage = (event: any) => {
 
       setWebPageMeta({
         url: pageUrl,
+        product_url: pageUrl,
         domain: payload.meta?.domain || safeHostname(currentUrl),
         title: payload.meta?.title || undefined,
         price: payload.meta?.price ?? null,
         currency: payload.meta?.currency ?? null,
+        retailer: null,
+        retailer_name: null,
+        brand: null,
+        source_id: null,
+        external_product_id: null,
+        source_type: 'browser_import',
       });
 
       // 🔹 Anchor for this page = first scraped image
       setAnchorImage(imgs[0] ?? null);
       setAnchorUrl(pageUrl);
+      setAnchorWasCleared(false);
 
       setShowPicker(true);
     }
@@ -313,39 +461,178 @@ const onWebMessage = (event: any) => {
       return true;
     });
   }, [webImages, filterProductish]);
+  const availableBrowserItems = useMemo(
+    () =>
+      buildBrowserItemsFromImageUrls(filteredImages.length ? filteredImages : webImages, {
+        title: webPageMeta.title || null,
+        brand: webPageMeta.brand || null,
+        retailer: webPageMeta.retailer || webPageMeta.retailer_name || null,
+        product_url: webPageMeta.product_url || webPageMeta.url || currentUrl,
+        price: webPageMeta.price ?? null,
+        currency: webPageMeta.currency ?? null,
+      }),
+    [
+      currentUrl,
+      filteredImages,
+      webImages,
+      webPageMeta.brand,
+      webPageMeta.currency,
+      webPageMeta.price,
+      webPageMeta.product_url,
+      webPageMeta.retailer,
+      webPageMeta.retailer_name,
+      webPageMeta.title,
+      webPageMeta.url,
+    ]
+  );
+  const screenshotSourceImages = useMemo(
+    () => (selectedList.length ? selectedList : anchorImage ? [anchorImage] : []),
+    [selectedList, anchorImage]
+  );
+  const isBrowserActionBusy = !!activeBrowserAction || !!importQueueState || fabLoading;
+
+  function beginBrowserAction(label: string) {
+    if (activeBrowserActionRef.current) {
+      Alert.alert('Please wait', `${activeBrowserActionRef.current} is already running.`);
+      return false;
+    }
+
+    activeBrowserActionRef.current = label;
+    setActiveBrowserAction(label);
+    return true;
+  }
+
+  function endBrowserAction() {
+    activeBrowserActionRef.current = null;
+    setActiveBrowserAction(null);
+  }
+
+  async function runExclusiveBrowserAction(label: string, work: () => Promise<void>) {
+    if (!beginBrowserAction(label)) return;
+
+    try {
+      await work();
+    } finally {
+      endBrowserAction();
+    }
+  }
+
+  function dismissBrowserUi() {
+    setShowPicker(false);
+  }
+
+  async function openCurrentUrlExternally(rawUrl?: string | null) {
+    const targetUrl = String(rawUrl || currentUrl || sourceUrl || '').trim();
+    if (!HTTP_URL_PATTERN.test(targetUrl)) {
+      Alert.alert('Cannot open link', 'Only standard http(s) pages can be opened externally.');
+      return;
+    }
+
+    try {
+      const supported = await Linking.canOpenURL(targetUrl);
+      if (!supported) {
+        Alert.alert('Cannot open link', 'This page could not be opened outside the app.');
+        return;
+      }
+      await Linking.openURL(targetUrl);
+    } catch (error: any) {
+      Alert.alert('Cannot open link', error?.message || 'This page could not be opened outside the app.');
+    }
+  }
+
+  function navigateFromBrowser(screenName: string, params?: Record<string, any>) {
+    const shouldWaitForPickerDismiss = showPicker;
+    dismissBrowserUi();
+
+    const performNavigation = () => {
+      navigation.navigate(screenName, params);
+    };
+
+    if (shouldWaitForPickerDismiss) {
+      InteractionManager.runAfterInteractions(() => {
+        setTimeout(performNavigation, 220);
+      });
+      return;
+    }
+
+    requestAnimationFrame(performNavigation);
+  }
+
+  function navigateToItemVerdict(item: any) {
+    if (!item) return;
+    const external = isExternalItemLike(item);
+    navigateFromBrowser('ItemVerdict', {
+      itemId: external ? undefined : item.id,
+      item,
+      source: 'browser',
+      autoSaved: !external && item?.wardrobe_status === 'owned',
+    });
+  }
+
+  function completeBrowserImportUi() {
+    setWebSelected({});
+    setShowPicker(false);
+  }
   // 🔹 Ensure we always have an anchor when there are images
   useEffect(() => {
-    if (!anchorImage && filteredImages.length > 0) {
+    if (!anchorImage && filteredImages.length > 0 && !anchorWasCleared) {
       setAnchorImage(filteredImages[0]);
       setAnchorUrl(webPageMeta.url || currentUrl);
     }
-  }, [anchorImage, filteredImages, webPageMeta.url, currentUrl]);
+  }, [anchorImage, anchorWasCleared, filteredImages, webPageMeta.url, currentUrl]);
 
   // Toggle selection
   function toggle(u: string) {
-    setWebSelected((p) => ({ ...p, [u]: !p[u] }));
+    setWebSelected((p) => {
+      const next = { ...p };
+      if (next[u]) {
+        delete next[u];
+        return next;
+      }
+
+      if (Object.keys(next).length >= MAX_IMPORT_QUEUE_ITEMS) {
+        Alert.alert('Import limit', buildImportQueueMessage(Object.keys(next).length + 1));
+        return next;
+      }
+
+      next[u] = true;
+      return next;
+    });
     setAnchorImage(u);
+    setAnchorWasCleared(false);
   }
   function selectAll() {
     const next: Record<string, boolean> = {};
-    filteredImages.forEach((u) => { next[u] = true; });
+    capImportQueue(filteredImages, true).forEach((u) => { next[u] = true; });
     setWebSelected(next);
+    if (!anchorImage) {
+      const firstSelected = Object.keys(next)[0];
+      if (firstSelected) setAnchorImage(firstSelected);
+    }
+    setAnchorWasCleared(false);
   }
   function clearAll() {
     setWebSelected({});
   }
 
   // Import helpers (unchanged core)
-  function makeImportMeta(method: 'pick' | 'autoscan', chosenFirst?: string) {
+  function makeImportMeta(method: 'pick' | 'autoscan' | 'screenshot', chosenFirst?: string) {
     return {
       method,
       source_url: webPageMeta.url || currentUrl,
+      product_url: webPageMeta.product_url || webPageMeta.url || currentUrl,
       source_domain: webPageMeta.domain || safeHostname(currentUrl) || null,
-      retailer_name: null,
-      brand: null,
+      retailer: webPageMeta.retailer ?? webPageMeta.retailer_name ?? null,
+      retailer_name: webPageMeta.retailer_name ?? null,
+      brand: webPageMeta.brand ?? null,
       price: webPageMeta.price ?? null,
       currency: webPageMeta.currency ?? null,
       source_image_url: chosenFirst || null,
+      original_image_url: chosenFirst || null,
+      source_type: method === 'pick' || method === 'screenshot' || method === 'autoscan' ? 'browser_import' : null,
+      source_id: webPageMeta.source_id ?? null,
+      external_product_id: webPageMeta.external_product_id ?? null,
+      source_title: webPageMeta.title ?? null,
     };
   }
   function normalizeSeason(input: string): string {
@@ -412,7 +699,10 @@ async function bytesFromUri(uri: string): Promise<{ bytes: Uint8Array; mime: str
     return { bytes, mime, ext };
   }
 }
-async function uploadImageToSupabase(uri: string): Promise<string> {
+async function uploadImageToSupabase(
+  uri: string,
+  userId: string
+): Promise<{ imagePath: string; imageUrl: string | null; accessUrl: string | null }> {
   let workingUri = uri;
   if (/^https?:\/\//i.test(uri)) {
     // leave as is → handled by fetch in bytesFromUri
@@ -423,21 +713,12 @@ async function uploadImageToSupabase(uri: string): Promise<string> {
   }
 
   const { bytes, mime, ext } = await bytesFromUri(workingUri);
-
-  const fileName = `${Date.now()}_${Math.floor(Math.random() * 1e6)}.${ext}`;
-
-  const { error: uploadError } = await supabase.storage
-    .from('clothes')
-    .upload(fileName, bytes, {
-      contentType: mime,
-      upsert: false,
-    });
-  if (uploadError) throw new Error(uploadError.message);
-
-  const { data: publicUrlData } = supabase.storage.from('clothes').getPublicUrl(fileName);
-  if (!publicUrlData?.publicUrl) throw new Error('Failed to get public URL');
-
-  return publicUrlData.publicUrl;
+  return uploadWardrobeImageBytes({
+    bytes,
+    contentType: mime,
+    extension: ext,
+    userId,
+  });
 }
 async function ensureLocalUri(uri: string): Promise<string> {
   if (uri.startsWith('file://') || uri.startsWith('/')) {
@@ -455,9 +736,78 @@ async function ensureLocalUri(uri: string): Promise<string> {
   return downloadRes.uri;
 }
 
-async function addSelectedForImport(listOverride?: string[]) {
+async function getAuthenticatedUserOrThrow() {
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+  if (error || !user) throw new Error('Not logged in.');
+  return user;
+}
+
+async function parseApiJsonSafe(response: Response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+async function buildUploadedExternalLockedItem({
+  sourceUri,
+  userId,
+  importMeta,
+  fallbackName,
+}: {
+  sourceUri: string;
+  userId: string;
+  importMeta: Record<string, any>;
+  fallbackName?: string | null;
+}) {
+  const localUri = HTTP_URL_PATTERN.test(sourceUri) ? await ensureLocalUri(sourceUri) : sourceUri;
+  const uploadedImage = await uploadImageToSupabase(localUri, userId);
+  const accessUrl = uploadedImage.accessUrl;
+  if (!accessUrl) throw new Error('Upload returned null');
+
+  const tagResp = await apiPost('/tag', {
+    image_url: accessUrl,
+    import_context: buildTagImportContext(importMeta, importMeta?.source_image_url || sourceUri),
+  });
+  const taggingPayload = (await parseApiJsonSafe(tagResp)) as TaggingResponse;
+  const tags = extractNormalizedTags(taggingPayload);
+  if (!tagResp.ok || taggingPayload?.error) {
+    throw new Error(taggingPayload?.error || 'Tagging failed');
+  }
+
+  const sourceSubtype =
+    importMeta?.method === 'screenshot'
+      ? 'temp_scan'
+      : importMeta?.source_type === 'external_link'
+        ? 'link_import'
+        : 'browser_import';
+
+  return {
+    ...buildExternalItemPayload({
+      scraped: importMeta,
+      tagged: tags,
+      normalized: tags,
+      uploadedImage,
+      sourceSubtype,
+      fallbackName: fallbackName || importMeta?.source_title || 'Imported Item',
+    }),
+    season: normalizeSeason(tags?.season),
+  };
+}
+
+async function addSelectedForImport({
+  listOverride,
+}: {
+  listOverride?: string[];
+} = {}) {
+  if (importQueueState) return;
+
   // Decide what we’re importing
-  const effectiveList =
+  const rawList =
     listOverride && listOverride.length
       ? listOverride                    // explicit override (FAB anchor)
       : selectedList.length
@@ -465,11 +815,9 @@ async function addSelectedForImport(listOverride?: string[]) {
       : anchorImage
       ? [anchorImage]                   // fallback: anchor
       : [];
+  const effectiveList = capImportQueue(rawList, rawList.length > MAX_IMPORT_QUEUE_ITEMS);
 
-  console.log('[addSelectedForImport] listOverride:', listOverride);
-  console.log('[addSelectedForImport] selectedList:', selectedList);
-  console.log('[addSelectedForImport] anchorImage:', anchorImage);
-  console.log('[addSelectedForImport] effectiveList:', effectiveList);
+  devLog('[addSelectedForImport] effectiveList:', effectiveList);
 
   if (!effectiveList.length) {
     return Alert.alert(
@@ -478,132 +826,190 @@ async function addSelectedForImport(listOverride?: string[]) {
     );
   }
 
+  const formatImportErrorMessage = (message?: string | null) => {
+    const rawMessage = String(message || '').trim();
+    if (rawMessage.includes('Failed to parse model output')) {
+      return 'Could not identify a clean product image from that selection.';
+    }
+    return rawMessage || 'Import failed.';
+  };
+
+  const buildImportSummary = (failures: Array<{ uri: string; message: string }>) => {
+    return failures
+      .slice(0, 3)
+      .map(({ uri, message }) => `${safeHostname(uri) || 'selected image'}: ${message}`)
+      .join('\n');
+  };
+
+  let successCount = 0;
+  const failures: Array<{ uri: string; message: string }> = [];
+
   try {
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-    if (userError || !user) throw new Error('Not logged in.');
+    const user = await getAuthenticatedUserOrThrow();
+    setImportQueueState({ completed: 0, total: effectiveList.length });
 
-    for (const uri of effectiveList) {
-      console.log('[Import] Tagging + uploading:', uri);
+    for (let index = 0; index < effectiveList.length; index += 1) {
+      const uri = effectiveList[index];
+      try {
+        devLog('[Import] Tagging + uploading:', uri);
+        const importMeta = makeImportMeta('pick', uri);
+        const externalItem = await buildUploadedExternalLockedItem({
+          sourceUri: uri,
+          userId: user.id,
+          importMeta,
+          fallbackName: webPageMeta.title || 'Imported Item',
+        });
 
-      // --- AI tagging ---
-      const tagResp = await fetch('http://192.168.0.187:5000/tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_url: uri }),
-      });
+        console.log('[item-source]', {
+          sourceType: externalItem?.source_type || 'external',
+          sourceSubtype: externalItem?.source_subtype || 'browser_import',
+          writingToWardrobe: true,
+          action: 'save_to_closet',
+        });
+        const insertPayload = buildWardrobeInsertPayloadFromExternalItem(externalItem, user.id, {
+          wardrobeStatus: 'owned',
+          importMethod: 'pick',
+          sourceTitleFallback: webPageMeta.title || 'Imported Item',
+        });
 
-      const raw = (await tagResp.text()).trim();
-      const cleaned = raw.replace(/^```(?:json)?\n?|```$/g, '').trim();
-      const tags = JSON.parse(cleaned);
-      if (tags?.error) throw new Error(tags.error);
-
-      // --- Meta ---
-      const importMeta = makeImportMeta('pick', uri);
-
-      // --- Upload attempt ---
-      const isRemote = /^https?:\/\//i.test(uri);
-      const localUri = isRemote ? await ensureLocalUri(uri) : uri;
-
-      const publicUrl = await uploadImageToSupabase(localUri);
-      if (!publicUrl) throw new Error('Upload returned null');
-
-      // --- Insert row ---
-      const insertPayload = {
-        user_id: user.id,
-        name: tags.name || importMeta.retailer_name || 'Imported Item',
-        type: tags.type,
-        main_category: tags.main_category,
-        primary_color: tags.primary_color,
-        secondary_colors: tags.secondary_colors || [],
-        pattern_description: tags.pattern_description || '',
-        vibe_tags: tags.vibe_tags || [],
-        season: normalizeSeason(tags.season),
-        image_url: publicUrl,
-        source_url: importMeta.source_url ?? null,
-        source_domain: importMeta.source_domain ?? null,
-        retailer_name: importMeta.retailer_name ?? null,
-        brand: importMeta.brand ?? (tags?.brand ?? null),
-        retail_price: importMeta.price ?? null,
-        currency: importMeta.currency ?? null,
-        source_image_url: uri,
-        import_method: 'pick',
-      };
-
-      const { error: insertError } = await supabase
-        .from('wardrobe')
-        .insert([insertPayload]);
-      if (insertError) throw new Error(insertError.message);
+        const { error: insertError } = await insertWardrobeItemWithCompatibility(insertPayload);
+        if (insertError) throw new Error(insertError.message);
+        successCount += 1;
+      } catch (itemError: any) {
+        const failureMessage = formatImportErrorMessage(itemError?.message);
+        console.error('❌ Import item failed:', { uri, message: failureMessage });
+        failures.push({ uri, message: failureMessage });
+      } finally {
+        setImportQueueState({ completed: index + 1, total: effectiveList.length });
+      }
     }
 
-    Alert.alert('Done', `${effectiveList.length} item(s) added to your closet.`);
-    setShowPicker(false);
-    setWebSelected({});
+    if (!successCount && failures.length === 1 && effectiveList.length === 1) {
+      let screenshotFallbackError: string | null = null;
+
+      if (screenshotRef?.current) {
+        try {
+          devLog('Falling back to screenshot for import.');
+          const screenshotUri = await captureRef(screenshotRef, {
+            format: 'jpg',
+            quality: 0.95,
+          });
+          devLog('Captured screenshot fallback for import.');
+
+          const fallbackImage = await uploadImageToSupabase(screenshotUri, user.id);
+          const fallbackUrl = fallbackImage.accessUrl;
+          devLog('Uploaded screenshot fallback for import.');
+          if (!fallbackUrl) throw new Error('Unable to resolve uploaded screenshot');
+
+          const tagResp = await apiPost('/tag', {
+            image_url: fallbackUrl,
+            import_context: buildTagImportContext(
+              {
+                method: 'screenshot',
+                source_url: anchorUrl || null,
+                product_url: anchorUrl || null,
+                source_domain: safeHostname(anchorUrl || currentUrl) || null,
+                retailer: webPageMeta.retailer ?? webPageMeta.retailer_name ?? null,
+                retailer_name: webPageMeta.retailer_name ?? null,
+                brand: webPageMeta.brand ?? null,
+                price: webPageMeta.price ?? null,
+                currency: webPageMeta.currency ?? null,
+                source_image_url: anchorImage || null,
+                original_image_url: anchorImage || null,
+                source_type: 'browser_import',
+                source_id: webPageMeta.source_id ?? null,
+                external_product_id: webPageMeta.external_product_id ?? null,
+                source_title: webPageMeta.title ?? null,
+              },
+              anchorImage || fallbackUrl
+            ),
+          });
+          const taggingPayload = (await parseApiJsonSafe(tagResp)) as TaggingResponse;
+          const tags = extractNormalizedTags(taggingPayload);
+          if (!tagResp.ok || taggingPayload?.error) throw new Error(taggingPayload?.error || 'Tagging failed');
+
+          const externalItem = buildExternalItemPayload({
+            scraped: {
+              source_url: anchorUrl || null,
+              product_url: anchorUrl || null,
+              source_domain: safeHostname(anchorUrl || currentUrl) || null,
+              retailer: webPageMeta.retailer ?? webPageMeta.retailer_name ?? null,
+              retailer_name: webPageMeta.retailer_name ?? null,
+              brand: webPageMeta.brand ?? null,
+              price: webPageMeta.price ?? null,
+              currency: webPageMeta.currency ?? null,
+              source_image_url: anchorImage || 'screenshot',
+              original_image_url: anchorImage || 'screenshot',
+              source_type: 'browser_import',
+              source_id: webPageMeta.source_id ?? null,
+              external_product_id: webPageMeta.external_product_id ?? null,
+              source_title: webPageMeta.title ?? null,
+            },
+            tagged: tags,
+            normalized: tags,
+            uploadedImage: fallbackImage,
+            sourceSubtype: 'browser_import',
+            fallbackName: webPageMeta.title || 'Imported Screenshot',
+          });
+          console.log('[item-source]', {
+            sourceType: externalItem?.source_type || 'external',
+            sourceSubtype: externalItem?.source_subtype || 'browser_import',
+            writingToWardrobe: true,
+            action: 'save_to_closet',
+          });
+          const fallbackPayload = buildWardrobeInsertPayloadFromExternalItem(externalItem, user?.id ?? '', {
+            wardrobeStatus: 'owned',
+            importMethod: 'screenshot',
+            sourceTitleFallback: webPageMeta.title || 'Imported Screenshot',
+          });
+
+          const { error: insertError } = await insertWardrobeItemWithCompatibility(fallbackPayload);
+          if (insertError) throw new Error(insertError.message);
+
+          successCount += 1;
+          failures.length = 0;
+          completeBrowserImportUi();
+          Alert.alert('Done', 'Item added to your closet.');
+          return;
+        } catch (ssErr: any) {
+          console.error('❌ Screenshot fallback failed:', ssErr);
+          screenshotFallbackError = formatImportErrorMessage(ssErr?.message || 'Screenshot fallback failed.');
+        }
+      } else {
+        console.error('❌ Screenshot ref missing!');
+      }
+
+      Alert.alert(
+        'Import Error',
+        screenshotFallbackError || failures[0]?.message || 'Failed to tag and import item.'
+      );
+      return;
+    }
+
+    if (successCount && !failures.length) {
+      completeBrowserImportUi();
+      Alert.alert('Done', `${successCount} item(s) added to your closet.`);
+      return;
+    }
+
+    if (successCount) {
+      completeBrowserImportUi();
+      Alert.alert(
+        'Import complete',
+        `${successCount} item(s) added. ${failures.length} failed.${failures.length ? `\n\n${buildImportSummary(failures)}` : ''}`
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Import Error',
+      failures.length ? buildImportSummary(failures) : 'Failed to tag and import item.'
+    );
   } catch (err: any) {
     console.error('❌ Import Error (outer catch):', err);
-
-  if (screenshotRef?.current) {
-    try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) throw new Error('Not logged in.');
-      console.log('⛔ Falling back to screenshot...');
-      const screenshotUri = await captureRef(screenshotRef, {
-        format: 'jpg',
-        quality: 0.95,
-      });
-      console.log('📸 Screenshot captured at:', screenshotUri);
-
-      const fallbackUrl = await uploadImageToSupabase(screenshotUri);
-      console.log('🖼️ Screenshot uploaded to:', fallbackUrl);
-
-      // ✅ Send fallback image to tagger
-      const tagResp = await fetch('http://192.168.0.187:5000/tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_url: fallbackUrl }),
-      });
-
-      const raw = (await tagResp.text()).trim();
-      const cleaned = raw.replace(/^```(?:json)?\n?|```$/g, '').trim();
-      const tags = JSON.parse(cleaned);
-      if (tags?.error) throw new Error(tags.error);
-
-      const fallbackPayload = {
-        user_id: user?.id ?? null,
-        name: tags.name || 'Imported Screenshot',
-        type: tags.type,
-        main_category: tags.main_category,
-        primary_color: tags.primary_color,
-        secondary_colors: tags.secondary_colors || [],
-        pattern_description: tags.pattern_description || '',
-        vibe_tags: tags.vibe_tags || [],
-        season: normalizeSeason(tags.season),
-        image_url: fallbackUrl,
-        source_url: null,
-        source_domain: null,
-        retailer_name: null,
-        brand: tags?.brand ?? null,
-        retail_price: null,
-        currency: null,
-        source_image_url: 'screenshot',
-        import_method: 'screenshot',
-      };
-
-      const { error: insertError } = await supabase.from('wardrobe').insert([fallbackPayload]);
-      if (insertError) throw new Error(insertError.message);
-
-      Alert.alert('Success', 'Screenshot used and tagged. Added to your closet.');
-      return;
-    } catch (ssErr) {
-      console.error('❌ Screenshot fallback failed:', ssErr);
-    }
-  } else {
-    console.error('❌ Screenshot ref missing!');
-  }
-
-  Alert.alert('Import Error', err?.message || 'Failed to tag and import item.');
+    Alert.alert('Import Error', formatImportErrorMessage(err?.message || 'Failed to tag and import item.'));
+  } finally {
+    setImportQueueState(null);
   }
 }
 
@@ -617,51 +1023,24 @@ async function tryOnAnchor() {
   }
 
   try {
+    const user = await getAuthenticatedUserOrThrow();
     const src = anchorImage;
-
-    // Build metadata about where this came from
+    console.log('[item-source]', {
+      sourceType: 'external',
+      sourceSubtype: 'browser_import',
+      writingToWardrobe: false,
+      action: 'try_on',
+    });
     const importMeta = makeImportMeta('pick', src);
-
-    // Make sure we have a local file we can upload
-    const isRemote = /^https?:\/\//i.test(src);
-    const localUri = isRemote ? await ensureLocalUri(src) : src;
-
-    // Upload to Supabase so TryOn backend has a stable URL
-    const publicUrl = await uploadImageToSupabase(localUri);
-    if (!publicUrl) throw new Error('Upload returned null');
-
-        // -----------------------------
-    // 🔥 STEP 1.2 — TAG & BUILD LOCKED ITEM
-    // -----------------------------
-    const tagResp = await fetch(`http://192.168.0.187:5000/tag`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_url: publicUrl }), // tag the uploaded Supabase image
+    const lockedItem = await buildUploadedExternalLockedItem({
+      sourceUri: src,
+      userId: user.id,
+      importMeta,
+      fallbackName: webPageMeta.title || 'Imported Item',
     });
 
-    const tags = await tagResp.json();
-    if (!tagResp.ok || tags?.error) {
-      throw new Error(tags?.error || 'Tagging failed');
-    }
-
-    // Build the locked item used for styling + try-on
-    const lockedItem = {
-      id: `ext_${Date.now()}`,
-      image_url: publicUrl,
-      name: tags.name,
-      main_category: tags.main_category,
-      type: tags.type,
-      primary_color: tags.primary_color,
-      secondary_colors: tags.secondary_colors || [],
-      pattern_description: tags.pattern_description,
-      vibe_tags: tags.vibe_tags || [],
-      season: tags.season || 'all',
-      meta: importMeta,
-    };
-
-
     // 🔥 Navigate to TryOnScreen for pure try-on around this one item
-    navigation.navigate('TryOn', {
+    navigateFromBrowser('TryOn', {
       mode: 'quick',
       lockedItem,
     });
@@ -672,23 +1051,28 @@ async function tryOnAnchor() {
     // --- Screenshot fallback if direct flow breaks ---
     if (screenshotRef?.current) {
       try {
-        console.log('⛔ Falling back to screenshot for try-on anchor.');
+        devLog('Falling back to screenshot for try-on anchor.');
         const screenshotUri = await captureRef(screenshotRef, {
           format: 'jpg',
           quality: 0.95,
         });
-        console.log('📸 Screenshot captured at:', screenshotUri);
+        devLog('Captured screenshot fallback for try-on anchor.');
 
-        const fallbackUrl = await uploadImageToSupabase(screenshotUri);
-        console.log('🖼️ Screenshot uploaded to:', fallbackUrl);
-
-        const importMeta = makeImportMeta('screenshot', fallbackUrl);
-
-        navigation.navigate('TryOn', {
-          mode: 'external',
-          clothingImageUrl: fallbackUrl,
-          sourceImageUrl: null,
+        const fallbackUser = await getAuthenticatedUserOrThrow();
+        const importMeta = {
+          ...makeImportMeta('screenshot', anchorImage || 'screenshot'),
+          source_image_url: anchorImage || 'screenshot',
+        };
+        const lockedItem = await buildUploadedExternalLockedItem({
+          sourceUri: screenshotUri,
+          userId: fallbackUser.id,
           importMeta,
+          fallbackName: webPageMeta.title || 'Screenshot Import',
+        });
+
+        navigateFromBrowser('TryOn', {
+          mode: 'quick',
+          lockedItem,
         });
 
         return;
@@ -704,26 +1088,87 @@ async function tryOnAnchor() {
   }
 }
 async function handleAddToCloset() {
-  console.log('[FAB] handleAddToCloset called');
-  console.log('[FAB] selectedList:', selectedList);
-  console.log('[FAB] anchorImage:', anchorImage);
+  await runExclusiveBrowserAction('Adding to closet', async () => {
+    devLog('[Tray] Add to Closet triggered.');
 
-  // Respect explicit multi-select first
-  if (selectedList.length > 0) {
-    await addSelectedForImport();       // uses selectedList
-    return;
-  }
+    if (selectedList.length > 0) {
+      await addSelectedForImport();
+      return;
+    }
 
-  // Otherwise: anchor method
-  if (!anchorImage) {
-    Alert.alert(
-      'No item selected',
-      'Tap the FAB once to detect a product image, then long-press to add it.'
-    );
-    return;
-  }
+    if (!anchorImage) {
+      Alert.alert(
+        'No item selected',
+        'Use Scan Page first so we can detect a product image to import.'
+      );
+      return;
+    }
 
-  await addSelectedForImport([anchorImage]); // force the anchor
+    await addSelectedForImport({ listOverride: [anchorImage] });
+  });
+}
+
+async function handleGetVerdict() {
+  await runExclusiveBrowserAction('Preparing verdict', async () => {
+    const selected = selectedList.length ? selectedList : anchorImage ? [anchorImage] : [];
+    if (!selected.length) {
+      Alert.alert('No item selected', 'Pick one product image first so we can judge it.');
+      return;
+    }
+    if (selected.length !== 1) {
+      Alert.alert('Choose one item', 'Get Verdict works on one item at a time.');
+      return;
+    }
+    const user = await getAuthenticatedUserOrThrow();
+    const selectedUri = selected[0];
+
+    console.log('[item-source]', {
+      sourceType: 'external',
+      sourceSubtype: 'browser_import',
+      writingToWardrobe: false,
+      action: 'verdict',
+    });
+
+    try {
+      const externalItem = await buildUploadedExternalLockedItem({
+        sourceUri: selectedUri,
+        userId: user.id,
+        importMeta: makeImportMeta('pick', selectedUri),
+        fallbackName: webPageMeta.title || 'Imported Item',
+      });
+      navigateToItemVerdict(externalItem);
+      return;
+    } catch (itemError: any) {
+      console.error('❌ Browser verdict prepare failed:', itemError);
+    }
+
+    if (screenshotRef?.current) {
+      try {
+        const screenshotUri = await captureRef(screenshotRef, {
+          format: 'jpg',
+          quality: 0.95,
+        });
+        const externalItem = await buildUploadedExternalLockedItem({
+          sourceUri: screenshotUri,
+          userId: user.id,
+          importMeta: {
+            ...makeImportMeta('screenshot', selectedUri),
+            source_image_url: selectedUri,
+            original_image_url: selectedUri,
+          },
+          fallbackName: webPageMeta.title || 'Imported Item',
+        });
+        navigateToItemVerdict(externalItem);
+        return;
+      } catch (fallbackError: any) {
+        console.error('❌ Browser verdict screenshot fallback failed:', fallbackError);
+        Alert.alert('Verdict error', fallbackError?.message || 'Could not prepare verdict for this item.');
+        return;
+      }
+    }
+
+    Alert.alert('Verdict error', 'Could not prepare verdict for this item.');
+  });
 }
 
 
@@ -737,33 +1182,21 @@ async function styleSelected() {
   const anchorUrl = chosen[0];
 
   try {
-    // --- Try tagging original image
-    const tagResponse = await fetch('http://192.168.0.187:5000/tag', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_url: anchorUrl }),
+    const user = await getAuthenticatedUserOrThrow();
+    console.log('[item-source]', {
+      sourceType: 'external',
+      sourceSubtype: 'browser_import',
+      writingToWardrobe: false,
+      action: 'style',
+    });
+    const lockedItem = await buildUploadedExternalLockedItem({
+      sourceUri: anchorUrl,
+      userId: user.id,
+      importMeta: makeImportMeta('pick', anchorUrl),
+      fallbackName: webPageMeta.title?.slice(0, 80) ?? 'Imported Item',
     });
 
-    const raw = (await tagResponse.text()).trim();
-    const cleaned = raw.replace(/^```(?:json)?\n?|```$/g, '').trim();
-    const tags = JSON.parse(cleaned);
-    if (tags?.error) throw new Error(tags.error);
-
-    const lockedItem = {
-      id: `ext_${Date.now()}`,
-      name: tags?.name || (webPageMeta.title?.slice(0, 80) ?? 'Imported Item'),
-      type: tags?.type,
-      main_category: tags?.main_category,
-      primary_color: tags?.primary_color,
-      secondary_colors: tags?.secondary_colors || [],
-      pattern_description: tags?.pattern_description || null,
-      vibe_tags: tags?.vibe_tags || [],
-      season: tags?.season || 'all',
-      image_url: anchorUrl,
-      meta: makeImportMeta('pick', anchorUrl),
-    };
-
-    navigation.navigate('StyleItemScreen', { item: lockedItem, externalTryOn: true });
+    navigateFromBrowser('StyleItemScreen', { item: lockedItem, externalTryOn: true });
 
   } catch (err: any) {
     console.error('❌ Try-On Tagging Error:', err);
@@ -771,43 +1204,26 @@ async function styleSelected() {
     // --- SCREENSHOT FALLBACK ---
     if (screenshotRef?.current) {
       try {
-        console.log('⛔ Falling back to screenshot for try-on...');
+        devLog('Falling back to screenshot for try-on.');
         const screenshotUri = await captureRef(screenshotRef, {
           format: 'jpg',
           quality: 0.95,
         });
-        console.log('📸 Screenshot captured at:', screenshotUri);
+        devLog('Captured screenshot fallback for try-on.');
 
-        const fallbackUrl = await uploadImageToSupabase(screenshotUri);
-        console.log('🖼️ Screenshot uploaded to:', fallbackUrl);
-
-        // Re-run tagging with screenshot URL
-        const tagResponse = await fetch('http://192.168.0.187:5000/tag', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image_url: fallbackUrl }),
+        const user = await getAuthenticatedUserOrThrow();
+        const lockedItem = await buildUploadedExternalLockedItem({
+          sourceUri: screenshotUri,
+          userId: user.id,
+          importMeta: {
+            ...makeImportMeta('screenshot', anchorUrl),
+            source_image_url: anchorUrl || 'screenshot',
+            import_method: 'screenshot',
+          },
+          fallbackName: 'Screenshot Import',
         });
 
-        const raw = (await tagResponse.text()).trim();
-        const cleaned = raw.replace(/^```(?:json)?\n?|```$/g, '').trim();
-        const tags = JSON.parse(cleaned);
-        if (tags?.error) throw new Error(tags.error);
-
-        const lockedItem = {
-          id: `ext_${Date.now()}`,
-          name: tags?.name || 'Screenshot Import',
-          type: tags?.type,
-          main_category: tags?.main_category,
-          primary_color: tags?.primary_color,
-          secondary_colors: tags?.secondary_colors || [],
-          pattern_description: tags?.pattern_description || null,
-          vibe_tags: tags?.vibe_tags || [],
-          season: tags?.season || 'all',
-          image_url: fallbackUrl,
-          meta: { source_image_url: 'screenshot', import_method: 'screenshot' },
-        };
-
-        navigation.navigate('StyleItemScreen', { item: lockedItem, externalTryOn: true });
+        navigateFromBrowser('StyleItemScreen', { item: lockedItem, externalTryOn: true });
         return;
 
       } catch (ssErr) {
@@ -820,9 +1236,68 @@ async function styleSelected() {
     Alert.alert('Try-On error', err?.message || 'Failed to start styling.');
   }
 }
+
+async function handleStyleItem() {
+  await runExclusiveBrowserAction('Styling item', async () => {
+    if (selectedList.length === 1) {
+      await styleSelected();
+      return;
+    }
+
+    await smartStyleFromCurrentPage();
+  });
+}
+
+async function handleFindRecommendation() {
+  await runExclusiveBrowserAction('Scanning page', async () => {
+    await autoscanPage();
+  });
+}
+
+async function handleTryOnItem() {
+  await runExclusiveBrowserAction('Preparing try-on', async () => {
+    await tryOnAnchor();
+  });
+}
+
+async function handleStyleCanvas() {
+  await runExclusiveBrowserAction(activeCanvasSession?.canvasId ? 'Continuing style canvas' : 'Opening style canvas', async () => {
+    if (!selectedList.length && !activeCanvasSession?.canvasId) {
+      Alert.alert('Select items first', 'Select at least one item to start a style canvas.');
+      return;
+    }
+
+    const selectedBrowserItems = buildBrowserItemsFromImageUrls(selectedList, {
+      title: webPageMeta.title || null,
+      brand: webPageMeta.brand || null,
+      retailer: webPageMeta.retailer || webPageMeta.retailer_name || null,
+      product_url: webPageMeta.product_url || webPageMeta.url || currentUrl,
+      price: webPageMeta.price ?? null,
+      currency: webPageMeta.currency ?? null,
+    });
+
+    if (activeCanvasSession?.canvasId) {
+      navigateFromBrowser('StyleCanvas', {
+        canvasId: activeCanvasSession.canvasId,
+        appendItems: browserItemsToCanvasItems(selectedBrowserItems),
+        availableBrowserItems,
+        origin: 'browser',
+        initialTitle: activeCanvasSession.title || (webPageMeta.title ? `${webPageMeta.title} Canvas` : 'Style Canvas'),
+      });
+      return;
+    }
+
+    navigateFromBrowser('StyleCanvas', {
+      initialItems: browserItemsToCanvasItems(selectedBrowserItems),
+      availableBrowserItems,
+      origin: 'browser',
+      initialTitle: webPageMeta.title ? `${webPageMeta.title} Canvas` : 'Style Canvas',
+    });
+  });
+}
   async function smartStyleFromCurrentPage() {
-    const currentUrl = webPageMeta.url || currentUrl;
-    if (!currentUrl) {
+    const currentPageUrl = webPageMeta.url || currentUrl;
+    if (!currentPageUrl) {
       Alert.alert('No page loaded', 'Open a product page first.');
       return;
     }
@@ -831,18 +1306,19 @@ async function styleSelected() {
     setFabLoading(true);
 
     try {
-      // 1) Ask backend to scan the current page for a product
-      const resp = await fetch('http://192.168.0.187:5000/import/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: currentUrl }),
+      const user = await getAuthenticatedUserOrThrow();
+      console.log('[item-source]', {
+        sourceType: 'external',
+        sourceSubtype: 'browser_import',
+        writingToWardrobe: false,
+        action: 'style',
       });
-
+      // 1) Ask backend to scan the current page for a product
+      const resp = await apiPost('/import/scan', { url: currentPageUrl });
+      const data = await parseApiJsonSafe(resp);
       if (!resp.ok) {
-        throw new Error(`Scan failed (${resp.status})`);
+        throw new Error(data?.error || `Scan failed (${resp.status})`);
       }
-
-      const data = await resp.json();
       if (!data?.ok || !data?.product) {
         throw new Error(data?.error || 'No product found on this page.');
       }
@@ -860,47 +1336,32 @@ async function styleSelected() {
         throw new Error('No usable product image found.');
       }
 
-      // 2) Tag that hero image using your existing /tag endpoint
-      const tagResp = await fetch('http://192.168.0.187:5000/tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_url: anchorUrl }),
-      });
-
-      const raw = (await tagResp.text()).trim();
-      const cleaned = raw.replace(/^```(?:json)?\n?|```$/g, '').trim();
-      const tags = JSON.parse(cleaned);
-
-      if (tags?.error) {
-        throw new Error(tags.error);
-      }
-
-      // 3) Build an external "locked item" object (same shape StyleItemScreen expects)
-      const lockedItem = {
-        id: `ext_${Date.now()}`,
-        name: tags?.name || (p.title?.slice(0, 80) ?? 'Imported Item'),
-        type: tags?.type,
-        main_category: tags?.main_category,
-        primary_color: tags?.primary_color,
-        secondary_colors: tags?.secondary_colors || [],
-        pattern_description: tags?.pattern_description || null,
-        vibe_tags: tags?.vibe_tags || [],
-        season: tags?.season || 'all',
-        image_url: anchorUrl,
-        meta: {
+      // 2) Upload and tag the hero image through our own storage path
+      const lockedItem = await buildUploadedExternalLockedItem({
+        sourceUri: anchorUrl,
+        userId: user.id,
+        importMeta: {
           method: 'autoscan',
-          source_url: p.url || currentUrl,
-          source_domain: p.domain || safeHostname(currentUrl),
-          retailer_name: p.retailer || null,
-          brand: tags?.brand ?? p.brand ?? null,
+          source_url: p.product_url || p.url || currentPageUrl,
+          product_url: p.product_url || p.url || currentPageUrl,
+          source_domain: p.domain || safeHostname(currentPageUrl),
+          retailer: p.retailer || p.retailerName || null,
+          retailer_name: p.retailer || p.retailerName || null,
+          brand: p.brand ?? null,
           price: p.price ?? null,
           currency: p.currency ?? null,
           source_image_url: anchorUrl,
+          original_image_url: anchorUrl,
+          source_type: 'browser_import',
+          source_id: p.sourceId ?? null,
+          external_product_id: p.externalProductId ?? null,
+          source_title: p.title || p.name || null,
         },
-      };
+        fallbackName: (p.title || p.name)?.slice(0, 80) ?? 'Imported Item',
+      });
 
-      // 4) Jump straight into your StyleItem screen with this external item
-      navigation.navigate('StyleItemScreen', {
+      // 3) Jump straight into your StyleItem screen with this external item
+      navigateFromBrowser('StyleItemScreen', {
         item: lockedItem,
         externalTryOn: true,
       });
@@ -921,13 +1382,9 @@ async function styleSelected() {
   async function autoscanPage() {
     const current = webPageMeta.url || currentUrl;
     try {
-      const resp = await fetch('http://192.168.0.187:5000/import/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: current }),
-      });
-      if (!resp.ok) throw new Error(`Scan failed (${resp.status})`);
-      const data = await resp.json();
+      const resp = await apiPost('/import/scan', { url: current });
+      const data = await parseApiJsonSafe(resp);
+      if (!resp.ok) throw new Error(data?.error || `Scan failed (${resp.status})`);
       if (!data?.ok || !data?.product) throw new Error(data?.error || 'No product found.');
       const p = data.product;
 
@@ -935,540 +1392,275 @@ async function styleSelected() {
       setWebImages(imgs);
       setWebSelected({});
       setWebPageMeta({
-        url: p.url || current,
+        url: p.product_url || p.url || current,
+        product_url: p.product_url || p.url || current,
         domain: p.domain || safeHostname(current),
-        title: p.title || webPageMeta.title,
+        title: p.title || p.name || webPageMeta.title,
         price: p.price ?? webPageMeta.price ?? null,
         currency: p.currency ?? webPageMeta.currency ?? null,
+        retailer: p.retailer || p.retailerName || webPageMeta.retailer || webPageMeta.retailer_name || null,
+        retailer_name: p.retailer || p.retailerName || webPageMeta.retailer_name || null,
+        brand: p.brand ?? webPageMeta.brand ?? null,
+        source_id: p.sourceId ?? webPageMeta.source_id ?? null,
+        external_product_id: p.externalProductId ?? webPageMeta.external_product_id ?? null,
+        source_type: 'browser_import',
       });
           // 🔹 NEW: set / refresh anchor for this page
       setAnchorImage(imgs[0] ?? null);
-      setAnchorUrl(pageUrl);
+      setAnchorUrl(p.url || current);
+      setAnchorWasCleared(false);
       setShowPicker(true);
     } catch (e: any) {
       Alert.alert('Autoscan error', e?.message || 'Failed to scan.');
     }
   }
 
+  function scanPageForCandidates() {
+    if (isBrowserActionBusy) return;
+    setAnchorWasCleared(false);
+    webRef.current?.injectJavaScript(INJECT_SCRAPE);
+  }
+
+  function handleRescanTray() {
+    if (isBrowserActionBusy) return;
+    setShowPicker(false);
+    setAnchorWasCleared(false);
+    webRef.current?.injectJavaScript(INJECT_SCRAPE);
+  }
+
+  function handleChangeTray() {
+    if (isBrowserActionBusy) return;
+    if (filteredImages.length || webImages.length) {
+      setShowPicker(true);
+      return;
+    }
+    setAnchorWasCleared(false);
+    webRef.current?.injectJavaScript(INJECT_SCRAPE);
+  }
+
+  function handleClearTray() {
+    if (isBrowserActionBusy) return;
+    setWebSelected({});
+    setAnchorImage(null);
+    setAnchorUrl(null);
+    setAnchorWasCleared(true);
+    setShowPicker(false);
+  }
+
   // ---------------- UI ----------------
 
   return (
     <View style={{ flex: 1, backgroundColor: F.bg }}>
-      {/* Header + URL (SafeArea) */}
-      <SafeAreaView style={{ backgroundColor: F.bg }}>
-        <View style={styles.topBar}>
-  <TouchableOpacity onPress={() => setDrawerOpen(true)} style={styles.iconBtn} accessibilityLabel="Open menu">
-    <Text style={{ color: F.text, fontWeight: '700' }}>☰</Text>
-  </TouchableOpacity>
+      <BrowserTopBar
+        addressBarText={addressBarText}
+        onClose={closeBrowser}
+        onChangeAddress={setAddressBarText}
+        onFocusAddress={() => setIsEditingBar(true)}
+        onBlurAddress={() => setIsEditingBar(false)}
+        onSubmitAddress={() => {
+          const next = normalizeOrSearch(addressBarText);
+          if (!next) return;
+          setSourceUrl(next);
+          setCurrentUrl(next);
+          setAddressBarText(next);
 
-  <TextInput
-    style={[styles.urlInput, { borderColor: F.border, color: F.text }]}
-    value={addressBarText}
-    onChangeText={setAddressBarText}
-    onFocus={() => setIsEditingBar(true)}
-    onBlur={() => setIsEditingBar(false)}
-    autoCapitalize="none"
-    autoCorrect={false}
-    keyboardType={Platform.select({ ios: 'url', android: 'default' })}
-    placeholder="Search or enter website"
-    placeholderTextColor={F.muted}
-    returnKeyType="go"
-    onSubmitEditing={() => {
-      const next = normalizeOrSearch(addressBarText);
-      if (!next) return;
-      setSourceUrl(next); 
-      setCurrentUrl(next);
-      setAddressBarText(next);
+          // @ts-ignore
+          if (Platform.OS === 'ios') (global as any).Keyboard?.dismiss?.();
+        }}
+        onOpenDrawer={() => setDrawerOpen(true)}
+        onGoBack={() => webRef.current?.goBack()}
+        onGoForward={() => webRef.current?.goForward()}
+        onReload={() => webRef.current?.reload()}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        progressAnim={progressAnim}
+        webLoading={progress < 1 && webLoading}
+      />
 
-      // @ts-ignore
-      if (Platform.OS === 'ios') (global as any).Keyboard?.dismiss?.();
-    }}
-  />
-
-  {/* Right-side browser controls */}
-  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-    <TouchableOpacity
-      onPress={() => webRef.current?.goBack()}
-      disabled={!canGoBack}
-      style={[styles.iconBtn, { opacity: canGoBack ? 1 : 0.35 }]}
-      accessibilityLabel="Back"
-    >
-      <Text style={{ color: F.text, fontWeight: '700' }}>‹</Text>
-    </TouchableOpacity>
-
-    <TouchableOpacity
-      onPress={() => webRef.current?.goForward()}
-      disabled={!canGoForward}
-      style={[styles.iconBtn, { opacity: canGoForward ? 1 : 0.35 }]}
-      accessibilityLabel="Forward"
-    >
-      <Text style={{ color: F.text, fontWeight: '700' }}>›</Text>
-    </TouchableOpacity>
-
-    <TouchableOpacity
-      onPress={() => webRef.current?.reload()}
-      style={styles.iconBtn}
-      accessibilityLabel="Reload"
-    >
-      <Text style={{ color: F.text, fontWeight: '700' }}>↻</Text>
-    </TouchableOpacity>
-  </View>
-</View>
-
-
-        {/* Safari-style progress bar */}
-        <View style={{ height: 2, backgroundColor: '#EFEFEF' }}>
-          <Animated.View
-            style={{
-              height: 2,
-              width: progressAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: ['0%', '100%'],
-              }) as any,
-              backgroundColor: F.primary,
-              opacity: progress < 1 && webLoading ? 1 : 0,
-            }}
-          />
+      {webErrorMessage ? (
+        <View style={styles.webErrorBanner}>
+          <View style={styles.webErrorRow}>
+            <Text style={styles.webErrorText}>{webErrorMessage}</Text>
+            {webErrorUrl && HTTP_URL_PATTERN.test(webErrorUrl) ? (
+              <TouchableOpacity
+                onPress={() => { void openCurrentUrlExternally(webErrorUrl); }}
+                style={styles.webErrorAction}
+              >
+                <Text style={styles.webErrorActionText}>Open in Browser</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         </View>
-      </SafeAreaView>
+      ) : null}
 
-      {/* WebView (no SafeArea) */}
-     <WebView
-      ref={webRef}
-      source={{ uri: sourceUrl  }}
-      onNavigationStateChange={(nav) => {
-      const next = nav?.url;
-      if (next) {
-        setCurrentUrl(next);
-        if (!isEditingBar) setAddressBarText(next);
-      }
-      setCanGoBack(!!nav?.canGoBack);
-      setCanGoForward(!!nav?.canGoForward);
-    }}
+      <WebView
+        ref={webRef}
+        source={{ uri: sourceUrl }}
+        onShouldStartLoadWithRequest={(request) => {
+          const reason = getBrowserNavigationBlockReason(request?.url);
+          if (!reason) {
+            setWebErrorMessage(null);
+            setWebErrorUrl(null);
+            return true;
+          }
 
-  onLoadStart={() => { setWebLoading(true); setProgress(0.05); }}
-  onLoadProgress={({ nativeEvent }) => {
-    setProgress(Math.max(0.05, nativeEvent.progress || 0));
-  }}
-  onLoadEnd={() => {
-    setProgress(1);
-    setTimeout(() => setWebLoading(false), 150);
-  }}
-  onMessage={onWebMessage}
-  javaScriptEnabled
-  domStorageEnabled
-  setSupportMultipleWindows={false}
-  applicationNameForUserAgent="Closana/Importer"
-  contentInsetAdjustmentBehavior="never"
-  automaticallyAdjustContentInsets={false}
-  bounces={false}
-  style={{ flex: 1, backgroundColor: F.bg }}
-/>
+          setWebErrorMessage(reason);
+          setWebErrorUrl(request?.url || currentUrl);
+          if (request?.url && request.url !== currentUrl) {
+            Alert.alert('Blocked link', reason);
+          }
+          return false;
+        }}
+        onNavigationStateChange={(nav) => {
+          const next = nav?.url;
+          if (next) {
+            setCurrentUrl(next);
+            if (!isEditingBar) setAddressBarText(next);
+          }
+          setCanGoBack(!!nav?.canGoBack);
+          setCanGoForward(!!nav?.canGoForward);
+        }}
+        onLoadStart={() => {
+          setWebLoading(true);
+          setProgress(0.05);
+          setWebErrorMessage(null);
+          setWebErrorUrl(null);
+        }}
+        onLoadProgress={({ nativeEvent }) => {
+          setProgress(Math.max(0.05, nativeEvent.progress || 0));
+        }}
+        onLoadEnd={() => {
+          setProgress(1);
+          setTimeout(() => setWebLoading(false), 150);
+        }}
+        onError={({ nativeEvent }) => {
+          setWebLoading(false);
+          setWebErrorMessage(nativeEvent?.description || 'This page failed to load in the in-app browser.');
+          setWebErrorUrl(nativeEvent?.url || currentUrl);
+        }}
+        onHttpError={({ nativeEvent }) => {
+          setWebLoading(false);
+          setWebErrorMessage(`This page returned an error (${nativeEvent?.statusCode || 'unknown'}).`);
+          setWebErrorUrl(nativeEvent?.url || currentUrl);
+        }}
+        onMessage={onWebMessage}
+        javaScriptEnabled
+        domStorageEnabled
+        setSupportMultipleWindows={false}
+        applicationNameForUserAgent="Closana/Importer"
+        contentInsetAdjustmentBehavior="never"
+        automaticallyAdjustContentInsets={false}
+        bounces={false}
+        style={{ flex: 1, backgroundColor: F.bg }}
+      />
 
-      
+      <BrowserActionTray
+        busy={isBrowserActionBusy}
+        activeAction={activeBrowserAction}
+        onScan={scanPageForCandidates}
+      />
 
-    
-      {/* 🔵 Floating Action Button */}
+      <BrowserDrawer
+        open={drawerOpen}
+        drawerX={drawerX}
+        backdropOpacity={backdropOpacity}
+        width={DRAWER_W}
+        sites={POPULAR_SITES}
+        onClose={() => setDrawerOpen(false)}
+        onSelectSite={(site) => {
+          setDrawerOpen(false);
+          setSourceUrl(site.url);
+          setCurrentUrl(site.url);
+          setAddressBarText(site.url);
+        }}
+      />
 
-      <SafeAreaView
-          pointerEvents="box-none"
-          style={{ position: 'absolute', bottom: 24, right: 20 }}
+      <BrowserImagePickerModal
+        visible={showPicker}
+        domain={webPageMeta.domain || null}
+        price={webPageMeta.price ?? null}
+        currency={webPageMeta.currency ?? null}
+        filterProductish={filterProductish}
+        isBusy={isBrowserActionBusy}
+        filteredImages={filteredImages}
+        selectedMap={webSelected}
+        selectedCount={selectedList.length}
+        hasActiveCanvas={!!activeCanvasSession?.canvasId}
+        activeCanvasTitle={activeCanvasSession?.title || null}
+        activeAction={activeBrowserAction}
+        importQueueState={importQueueState}
+        onClose={() => setShowPicker(false)}
+        onToggleFilter={() => setFilterProductish((value) => !value)}
+        onSelectAll={selectAll}
+        onClear={clearAll}
+        onToggleImage={toggle}
+        onAdd={() => {
+          void handleAddToCloset();
+        }}
+        onVerdict={() => {
+          void handleGetVerdict();
+        }}
+        onStyle={() => {
+          void handleStyleItem();
+        }}
+        onTryOn={() => {
+          void handleTryOnItem();
+        }}
+        onStyleCanvas={() => {
+          void handleStyleCanvas();
+        }}
+      >
+        <ViewShot
+          ref={screenshotRef}
+          options={{ format: 'jpg', quality: 0.95 }}
+          style={{
+            position: 'absolute',
+            top: -9999,
+            width: 400,
+            height: 400,
+            backgroundColor: '#fff',
+          }}
         >
-          <TouchableOpacity
-            activeOpacity={0.9}
-            onPress={() => webRef.current?.injectJavaScript(INJECT_SCRAPE)} // tap = find images
-            onLongPress={() => setFabMenuVisible(true)}                    // long press = menu
-            delayLongPress={300}
-            style={[
-              styles.fab,
-              anchorImage ? styles.fabAnchored : styles.fabIdle,
-            ]}
-          >
-            {fabLoading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.fabIcon}>
-                {anchorImage ? '✓' : '★'}
-              </Text>
-            )}
-          </TouchableOpacity>
-        </SafeAreaView>
-
-
-      {/* Drawer Backdrop */}
-      {/** Tap outside to close */}
-      <Animated.View
-        pointerEvents={drawerOpen ? 'auto' : 'none'}
-        style={[
-          StyleSheet.absoluteFillObject,
-          { backgroundColor: 'black', opacity: backdropOpacity },
-        ]}
-      >
-        <TouchableOpacity style={{ flex: 1 }} onPress={() => setDrawerOpen(false)} />
-      </Animated.View>
-
-      {/* Drawer */}
-      <Animated.View
-        style={[
-          styles.drawer,
-          { width: DRAWER_W, transform: [{ translateX: drawerX }] },
-        ]}
-      >
-        <SafeAreaView>
-          <Text style={styles.drawerTitle}>Popular</Text>
-          
-          
-<ScrollView
-  showsVerticalScrollIndicator={false}
-  contentContainerStyle={{ paddingBottom: 24 }}
->
-          {POPULAR_SITES.map((s) => (
-            <TouchableOpacity
-              key={s.name}
-              style={styles.drawerItem}
-              onPress={() => {
-                setDrawerOpen(false);
-                setSourceUrl(s.url);
-                setCurrentUrl(s.url);
-                setAddressBarText(s.url);
-
-              }}
-            >
-              <View style={styles.faviconCircle}>
-                <Text style={{ color: '#fff', fontWeight: '700' }}>
-                  {s.name.slice(0, 1)}
-                </Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.siteName}>{s.name}</Text>
-                <Text style={styles.siteDomain}>{s.domain}</Text>
-              </View>
-            </TouchableOpacity>
+          {screenshotSourceImages.map((uri) => (
+            <Image
+              key={uri}
+              source={{ uri }}
+              style={{ width: '100%', height: '100%', resizeMode: 'contain' }}
+            />
           ))}
-          </ScrollView>
-        </SafeAreaView>
-      </Animated.View>
-
-      {/* Image Picker Modal */}
-      <Modal visible={showPicker} animationType="slide" onRequestClose={() => setShowPicker(false)}>
-        <SafeAreaView style={[styles.container, { backgroundColor: F.bg }]}>
-          <View style={[styles.modalHeader, { borderBottomColor: F.border }]}>
-            <Text style={styles.modalHeaderTitle}>Found Images</Text>
-            <Text style={[styles.modalHeaderSub, { color: F.muted }]}>
-              {webPageMeta.domain ? `From ${webPageMeta.domain}` : 'Picked images'}
-              {webPageMeta.price != null ? ` · ${webPageMeta.currency || ''}${webPageMeta.price}` : ''}
-            </Text>
-          </View>
-
-          <View style={styles.controlsRow}>
-            <TouchableOpacity onPress={() => setFilterProductish((v) => !v)} style={[styles.controlBtn, { backgroundColor: F.card }]}>
-              <Text style={{ color: F.text }}>{filterProductish ? 'Filter: On' : 'Filter: Off'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={selectAll} style={[styles.controlBtn, { backgroundColor: F.card }]}>
-              <Text style={{ color: F.text }}>Select All</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={clearAll} style={[styles.controlBtn, { backgroundColor: F.card }]}>
-              <Text style={{ color: F.text }}>Clear</Text>
-            </TouchableOpacity>
-            <View style={{ flex: 1 }} />
-            <TouchableOpacity onPress={() => setShowPicker(false)} style={styles.doneBtn}>
-              <Text style={[styles.doneBtnText, { color: F.primary }]}>Done</Text>
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.grid}>
-            {filteredImages.map((u) => (
-              <TouchableOpacity key={u} onPress={() => toggle(u)} style={styles.gridItem}>
-                <View style={[styles.imageCard, { borderColor: webSelected[u] ? F.primary : F.border }]}>
-                  <Image source={{ uri: u }} style={styles.image} />
-                </View>
-                <View style={[styles.badge, { backgroundColor: webSelected[u] ? F.primary : 'rgba(0,0,0,0.45)' }]}>
-                  <Text style={styles.badgeText}>{webSelected[u] ? '✓' : '+'}</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-          {/* Hidden ViewShot for screenshot fallback */}
-          <ViewShot
-            ref={screenshotRef}
-            options={{ format: 'jpg', quality: 0.95 }}
-            style={{
-              position: 'absolute',
-              top: -9999, // hide off-screen
-              width: 400,
-              height: 400,
-              backgroundColor: '#fff',
-            }}
-          >
-            {selectedList.map((uri) => (
-              <Image
-                key={uri}
-                source={{ uri }}
-                style={{ width: '100%', height: '100%', resizeMode: 'contain' }}
-              />
-            ))}
-          </ViewShot>
-
-          <View style={[styles.stickyBar, { borderTopColor: F.border, backgroundColor: F.bg }]}>
-            <View style={styles.row}>
-              <TouchableOpacity onPress={addSelectedForImport} style={[styles.primaryBtn, { backgroundColor: F.primary }]}>
-                <Text style={styles.btnTextWhite}>Add {selectedList.length || ''} to Closet</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={styleSelected} style={[styles.outlineBtn, { borderColor: F.border }]}>
-                <Text style={[styles.btnText, { color: F.text }]}>Style 1</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={[styles.tipText, { color: F.muted }]}>Tip: pick multiple to import or pick one to style before saving.</Text>
-          </View>
-        </SafeAreaView>
-      </Modal>
-
-      {/* FAB Menu Modal */}
-      {/* FAB Action Menu */}
-      <Modal
-        visible={fabMenuVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setFabMenuVisible(false)}
-      >
-        <View style={styles.menuBackdrop}>
-          {/* Tap outside to close */}
-          <TouchableOpacity style={{ flex: 1 }} onPress={() => setFabMenuVisible(false)} />
-
-          <View style={styles.menuCard}>
-            <Text style={styles.menuTitle}>What do you want to do?</Text>
-
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={async () => {
-                setFabMenuVisible(false);
-                await tryOnAnchor();
-              }}
-            >
-              <Text style={styles.menuItemText}>Try On</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={async () => {
-                setFabMenuVisible(false);
-                await handleStyleItem();
-              }}
-            >
-              <Text style={styles.menuItemText}>Style Item</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={async () => {
-                setFabMenuVisible(false);
-                await handleFindRecommendation();
-              }}
-            >
-              <Text style={styles.menuItemText}>Find Recommendation</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-  style={[styles.menuItem, { borderBottomWidth: 0 }]}
-  onPress={async () => {
-    try {
-      setFabMenuVisible(false);
-      setFabLoading(true);
-
-      console.log('[FAB] Add to Closet pressed');
-      await handleAddToCloset();
-      console.log('[FAB] Add to Closet finished');
-    } catch (e) {
-      console.error('❌ FAB Add to Closet error:', e);
-    } finally {
-      setFabLoading(false);
-    }
-  }}
->
-  <Text style={styles.menuItemText}>Add to Closet</Text>
-</TouchableOpacity>
-
-          </View>
-        </View>
-      </Modal>
-     
+        </ViewShot>
+      </BrowserImagePickerModal>
     </View>
   );
 }
 
 // ---------------- Styles ----------------
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-
-  topBar: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  paddingHorizontal: 12,
-  paddingTop: 8,
-  paddingBottom: 8,
-  gap: 8,
-  flexWrap: 'nowrap',
-},
-
-  iconBtn: {
-  paddingHorizontal: 10,
-  paddingVertical: 8,
-  borderRadius: 10,
-  borderWidth: 1,
-  borderColor: F.border,
-  backgroundColor: 'rgba(0,0,0,0.04)', // subtle so you can see it
-  alignItems: 'center',
-  justifyContent: 'center',
-  minWidth: 34,
-},
-urlInput: {
-  flex: 1,
-  borderWidth: 1,
-  borderRadius: 10,
-  paddingHorizontal: 12,
-  height: 40,
-  minWidth: 0, // ✅ important on some layouts so it can shrink
-},
-
-
-  bottomBar: { padding: 12, gap: 8 },
-  row: { flexDirection: 'row', gap: 8 },
-  findBtn: { flex: 1, padding: 12, borderRadius: 10, },
-  outlineBtn: { padding: 12, backgroundColor: '#fff', borderWidth: 1, borderRadius: 10 },
-
-  btnTextWhite: { color: 'white', textAlign: 'center', fontWeight: '700' },
-  btnText: { textAlign: 'center', fontWeight: '600' },
-
-  // Drawer
-  drawer: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: '#fff',
-    elevation: 10,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 12,
-    paddingHorizontal: 14,
+  webErrorBanner: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#eef0f2',
   },
-  drawerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: F.text,
-    paddingHorizontal: 4,
-    paddingTop: 8,
-    paddingBottom: 12,
-  },
-  drawerItem: {
+  webErrorRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: F.border,
-    gap: 12,
+    gap: 10,
   },
-  faviconCircle: {
-    width: 30, height: 30, borderRadius: 15,
-    backgroundColor: '#111',
-    alignItems: 'center', justifyContent: 'center',
+  webErrorText: {
+    flex: 1,
+    color: '#1c1c1c',
+    fontSize: 13,
+    fontWeight: '500',
   },
-  siteName: { color: F.text, fontWeight: '600' },
-  siteDomain: { color: F.muted, fontSize: 12 },
-    fab: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: F.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 8,
-    elevation: 6,
+  webErrorAction: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#eef0f2',
   },
-  
-    fab: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: F.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  fabIcon: {
-    color: '#fff',
-    fontSize: 22,
+  webErrorActionText: {
+    color: '#1c1c1c',
+    fontSize: 12,
     fontWeight: '700',
   },
-  fabIdle: {
-  backgroundColor: F.primary, // default look
-},
-
-fabAnchored: {
-  backgroundColor: '#22c55e', // or whatever “locked” color you like
-},
-
-  menuBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'flex-end',
-  },
-  menuCard: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 28,
-  },
-  menuTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: F.text,
-    marginBottom: 8,
-  },
-  menuItem: {
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: F.border,
-  },
-  menuItemText: {
-    fontSize: 15,
-    color: F.text,
-  },
-
-
-
-  // Modal
-  modalHeader: { padding: 12, borderBottomWidth: 1 },
-  modalHeaderTitle: { color: F.text, fontSize: 18, fontWeight: '700' },
-  modalHeaderSub: { marginTop: 4 },
-
-  controlsRow: { paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  controlBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12 },
-  doneBtn: { paddingVertical: 8, paddingHorizontal: 12 },
-  doneBtnText: { fontWeight: '600' },
-
-  grid: { padding: 12, flexDirection: 'row', flexWrap: 'wrap' },
-  gridItem: { width: '31.5%', marginRight: '2.75%', marginBottom: 12 },
-  imageCard: { borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: F.border },
-  image: { width: '100%', aspectRatio: 1 },
-  badge: {
-    position: 'absolute', top: 6, right: 6,
-    width: 24, height: 24, borderRadius: 12,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  badgeText: { color: 'white', fontWeight: '700' },
-
-  stickyBar: { padding: 12, borderTopWidth: 1, borderTopColor: F.border },
-  primaryBtn: { flex: 1, padding: 14, borderRadius: 12 },
-  tipText: { marginTop: 8, textAlign: 'center' },
 });

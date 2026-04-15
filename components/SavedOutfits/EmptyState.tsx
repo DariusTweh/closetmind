@@ -1,39 +1,50 @@
-// components/EmptyState.tsx
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import HangerHeartIcon from '../icons/HangerHeartIcon'; // ✅ correct
-import { colors, spacing, radii, shadows, typography } from '../../lib/theme';
+import HangerHeartIcon from '../icons/HangerHeartIcon';
+import { spacing, typography } from '../../lib/theme';
 
 
 export default function EmptyState() {
   return (
     <View style={styles.container}>
-      <HangerHeartIcon size={100} color="#8abfa3" />
-      <Text style={styles.title}>No saved outfits</Text>
-      <Text style={styles.subtitle}>Outfits you save will appear here.</Text>
+      <HangerHeartIcon size={88} color="#2c2622" />
+      <Text style={styles.eyebrow}>Archive empty</Text>
+      <Text style={styles.title}>No saved outfits yet</Text>
+      <Text style={styles.subtitle}>Looks you keep will collect here for quick revisit and restyling.</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    marginTop: spacing.xl * 2.5, // ~80
+    marginTop: spacing.xl * 2,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  eyebrow: {
+    marginTop: spacing.md,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    color: 'rgba(28, 28, 28, 0.52)',
+    fontFamily: typography.fontFamily,
   },
   title: {
-    fontSize: 20,
+    fontSize: 28,
     fontWeight: '700',
     fontFamily: 'Georgia',
-    color: colors.textPrimary,
-    marginTop: spacing.md,
-    marginBottom: spacing.xs,
+    color: '#1c1c1c',
+    marginTop: 10,
+    marginBottom: spacing.sm,
   },
   subtitle: {
-    fontSize: 15,
-    color: colors.textSecondary,
+    maxWidth: 280,
+    fontSize: 14,
+    lineHeight: 20,
+    color: 'rgba(28, 28, 28, 0.72)',
     textAlign: 'center',
-    paddingHorizontal: spacing.lg,
     fontFamily: typography.fontFamily,
   },
 });

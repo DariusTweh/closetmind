@@ -7,6 +7,7 @@ export default function ProfileActions({
   onEditProfile,
   onPreferences,
   onLogout,
+  logoutBusy = false,
 }) {
   return (
     <View style={styles.container}>
@@ -18,8 +19,12 @@ export default function ProfileActions({
         <Text style={styles.buttonText}>Style Preferences</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity style={[styles.button, styles.logout]} onPress={onLogout}>
-        <Text style={[styles.buttonText, styles.logoutText]}>Log Out</Text>
+      <TouchableOpacity
+        style={[styles.button, styles.logout, logoutBusy && styles.disabledButton]}
+        onPress={onLogout}
+        disabled={logoutBusy}
+      >
+        <Text style={[styles.buttonText, styles.logoutText]}>{logoutBusy ? 'Logging Out…' : 'Log Out'}</Text>
       </TouchableOpacity>
     </View>
   );
@@ -44,6 +49,9 @@ const styles = StyleSheet.create({
   },
   logout: {
     backgroundColor: '#fceeee',
+  },
+  disabledButton: {
+    opacity: 0.6,
   },
   logoutText: {
     color: colors.danger,

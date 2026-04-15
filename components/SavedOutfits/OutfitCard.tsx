@@ -1,79 +1,144 @@
 import React from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Pressable } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import { colors, spacing, radii, shadows, typography } from '../../lib/theme'; // adjust if needed
+import { spacing, typography } from '../../lib/theme';
+import OutfitMetaRow from './OutfitMetaRow';
+import OutfitPreviewStrip from './OutfitPreviewStrip';
 
 export default function OutfitCard({ outfit, onPress, onToggleFavorite }) {
-  const tags = (outfit.context || '').split(/[,.•|]+/).map(tag => tag.trim()).filter(Boolean);
+  const previewItems = Array.isArray(outfit.resolvedItems)
+    ? outfit.resolvedItems
+    : Array.isArray(outfit.wardrobeItems)
+      ? outfit.wardrobeItems
+      : [];
+  const itemCount = previewItems.length;
+  const summary = [outfit.context, outfit.season ? String(outfit.season).charAt(0).toUpperCase() + String(outfit.season).slice(1) : null]
+    .filter(Boolean)
+    .join(' • ');
+  const badges = [
+    outfit.source_kind === 'canvas' ? 'Canvas' : null,
+    outfit.has_external_items ? 'Mixed Source' : null,
+  ].filter(Boolean);
 
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress}>
-      <TouchableOpacity style={styles.heartIcon} onPress={onToggleFavorite}>
-        <Icon
-          name={outfit.is_favorite ? 'heart' : 'heart-outline'}
-          size={22}
-          color={outfit.is_favorite ? '#8abfa3' : '#aaa'}
-        />
-      </TouchableOpacity>
+    <View style={styles.card}>
+      <TouchableOpacity activeOpacity={0.9} onPress={onPress}>
+        <View style={styles.topRow}>
+          <Text style={styles.title} numberOfLines={2}>
+            {outfit.name || 'Untitled Fit'}
+          </Text>
 
-      <Text style={styles.title}>{outfit.name || 'Untitled Fit'}</Text>
+          <Pressable
+            style={styles.heartButton}
+            onPress={onToggleFavorite}
+            hitSlop={10}
+            pressRetentionOffset={10}
+          >
+            <Icon
+              name={outfit.is_favorite ? 'heart' : 'heart-outline'}
+              size={18}
+              color={outfit.is_favorite ? '#2f2a26' : '#8e8479'}
+            />
+          </Pressable>
+        </View>
 
-      {tags.length > 0 && (
-        <Text style={styles.tags}>
-          {tags.join(' • ')}
-        </Text>
-      )}
+        {summary ? (
+          <Text style={styles.summary} numberOfLines={2}>
+            {summary}
+          </Text>
+        ) : null}
 
-      <View style={styles.imageRow}>
-        {outfit.wardrobeItems?.map(item => (
-          <Image
-            key={item.id}
-            source={{ uri: item.image_url }}
-            style={styles.image}
+        {badges.length ? (
+          <View style={styles.badgeRow}>
+            {badges.map((badge) => (
+              <View key={badge} style={styles.badge}>
+                <Text style={styles.badgeText}>{badge}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        <OutfitPreviewStrip items={previewItems} />
+
+        <View style={styles.metaRow}>
+          <OutfitMetaRow
+            itemCount={itemCount}
+            season={outfit.season}
+            isFavorite={outfit.is_favorite}
           />
-        ))}
-      </View>
-    </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: colors.backgroundAlt,
-    borderRadius: radii.lg,
-    padding: spacing.md + 2,
-    marginBottom: spacing.md + 2,
-    position: 'relative',
-    ...shadows.card,
+    backgroundColor: '#fafaff',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#dbd3c9',
+    padding: 16,
+    marginBottom: 14,
   },
-  heartIcon: {
-    position: 'absolute',
-    top: spacing.md,
-    right: spacing.md,
-    zIndex: 10,
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
   },
   title: {
-    fontSize: 20,
+    flex: 1,
+    fontSize: 28,
+    lineHeight: 32,
     fontWeight: '700',
-    color: colors.textPrimary,
-    fontFamily: 'Georgia', // keeps editorial flair as you used
-    paddingRight: 32, // for heart icon
-    marginBottom: spacing.xs,
+    color: '#1e1916',
+    fontFamily: 'Georgia',
+    paddingRight: spacing.md,
   },
-  tags: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    marginBottom: spacing.md - 2,
+  heartButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#daddd8',
+    backgroundColor: '#eef0f2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summary: {
+    marginTop: 8,
+    marginBottom: 12,
+    fontSize: 13,
+    lineHeight: 18,
+    color: 'rgba(28, 28, 28, 0.72)',
     fontFamily: typography.fontFamily,
   },
-  imageRow: {
+  badgeRow: {
     flexDirection: 'row',
-    gap: spacing.sm,
+    flexWrap: 'wrap',
+    marginBottom: 12,
+    gap: 8,
   },
-  image: {
-    width: 70,
-    height: 70,
-    borderRadius: radii.md,
-    backgroundColor: colors.border,
+  badge: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: '#f0e7dd',
+    borderWidth: 1,
+    borderColor: '#e4d7ca',
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#5e4030',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    fontFamily: typography.fontFamily,
+  },
+  metaRow: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#e5ddd3',
   },
 });

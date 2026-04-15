@@ -1,102 +1,103 @@
-// screens/Onboarding/UseIntentScreen.tsx
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView } from 'react-native';
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { supabase } from '../../lib/supabase'; 
+import OnboardingChoiceCard from '../../components/Onboarding/OnboardingChoiceCard';
+import OnboardingScaffold from '../../components/Onboarding/OnboardingScaffold';
+import { supabase } from '../../lib/supabase';
+import { colors, spacing, typography } from '../../lib/theme';
 
 const OPTIONS = [
-  { id: 'closet', label: 'Just my digital closet' },
-  { id: 'sell', label: 'Selling clothes too' },
-  { id: 'both', label: 'Both' },
+  {
+    id: 'closet',
+    label: 'Just my digital closet',
+    description: 'Track what you own, style around it, and make sharper buying decisions.',
+  },
+  {
+    id: 'sell',
+    label: 'Selling clothes too',
+    description: 'Use ClosetMind to manage what you own and what you may want to resell.',
+  },
+  {
+    id: 'both',
+    label: 'Both',
+    description: 'Blend wardrobe intelligence with resale awareness from the start.',
+  },
 ];
 
 export default function UseIntentScreen() {
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const [selected, setSelected] = useState<string | null>(null);
 
   const handleNext = async () => {
-  try {
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError || !userData?.user) throw new Error('User not found');
+    try {
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData?.user) throw new Error('User not found');
 
-    const userId = userData.user.id;
+      const userId = userData.user.id;
 
-    const { error: updateError } = await supabase
-      .from('profiles')
-      .update({ use_intent: selected })
-      .eq('id', userId);
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ use_intent: selected })
+        .eq('id', userId);
 
-    if (updateError) throw updateError;
+      if (updateError) throw updateError;
 
-    navigation.navigate('ToneSelect');
-  } catch (err) {
-    console.error('❌ Failed to save use intent:', err);
-    Alert.alert('Error', 'Something went wrong. Please try again.');
-  }
-};
+      navigation.navigate('StyleVibe' as never);
+    } catch (err) {
+      console.error('❌ Failed to save use intent:', err);
+      Alert.alert('Error', 'Something went wrong. Please try again.');
+    }
+  };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <Text style={styles.title}>What are you using ClosetMind for?</Text>
-      {OPTIONS.map((opt) => (
+    <OnboardingScaffold
+      step="Step 2 of 6"
+      title="What should ClosetMind optimize for first?"
+      subtitle="This shapes how the app prioritizes verdicts, styling, and marketplace context from day one."
+      footer={
         <TouchableOpacity
-          key={opt.id}
-          style={[styles.option, selected === opt.id && styles.selectedOption]}
-          onPress={() => setSelected(opt.id)}
+          activeOpacity={0.84}
+          style={[styles.primaryButton, !selected && styles.buttonDisabled]}
+          onPress={handleNext}
+          disabled={!selected}
         >
-          <Text style={styles.optionText}>{opt.label}</Text>
+          <Text style={styles.primaryButtonText}>Continue</Text>
         </TouchableOpacity>
-      ))}
-
-      <TouchableOpacity
-        style={[styles.nextButton, !selected && { opacity: 0.4 }]}
-        onPress={handleNext}
-        disabled={!selected}
-      >
-        <Text style={styles.nextText}>Next</Text>
-      </TouchableOpacity>
-    </SafeAreaView>
+      }
+    >
+      <View style={styles.stack}>
+        {OPTIONS.map((option) => (
+          <OnboardingChoiceCard
+            key={option.id}
+            label={option.label}
+            description={option.description}
+            selected={selected === option.id}
+            onPress={() => setSelected(option.id)}
+          />
+        ))}
+      </View>
+    </OnboardingScaffold>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fdf8f3',
-    padding: 20,
+  stack: {
+    gap: spacing.md - 2,
   },
-  title: {
-    fontSize: 22,
-    fontWeight: '600',
-    color: '#111',
-    marginBottom: 30,
-  },
-  option: {
-    padding: 16,
+  primaryButton: {
+    minHeight: 54,
     borderRadius: 16,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#ccc',
-    marginBottom: 16,
-  },
-  selectedOption: {
-    borderColor: '#f4a261',
-    backgroundColor: '#fff6f1',
-  },
-  optionText: {
-    fontSize: 16,
-    color: '#111',
-  },
-  nextButton: {
-    marginTop: 'auto',
-    backgroundColor: '#f4a261',
-    paddingVertical: 14,
-    borderRadius: 30,
+    backgroundColor: colors.accent,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  nextText: {
-    fontSize: 16,
-    color: '#fff',
-    fontWeight: '600',
+  primaryButtonText: {
+    color: colors.textOnAccent,
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: typography.fontFamily,
+  },
+  buttonDisabled: {
+    opacity: 0.45,
   },
 });

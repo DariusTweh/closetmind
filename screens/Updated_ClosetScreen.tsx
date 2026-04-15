@@ -73,7 +73,7 @@ export default function ClosetScreen() {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#fdf8f3' }}>
+    <View style={{ flex: 1, backgroundColor: '#fafaff' }}>
       <ClosetHeader
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}

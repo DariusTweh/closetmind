@@ -1,13 +1,14 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import WardrobeItemImage from '../Closet/WardrobeItemImage';
 
 export default function OutfitItemCard({ item, lockedItems = [], onToggleLock }) {
   const isLocked = Array.isArray(lockedItems) && lockedItems.some(l => l.id === item.id);
 
   return (
     <View style={styles.itemRow}>
-      <Image source={{ uri: item.image_url }} style={styles.itemImage} />
+      <WardrobeItemImage item={item} style={styles.itemImage} />
       <View style={{ flex: 1, marginLeft: 12 }}>
         <Text style={styles.itemTitle}>{item.name || item.type}</Text>
         <Text style={styles.itemSubtitle}>{item.reason}</Text>

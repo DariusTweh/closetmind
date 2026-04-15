@@ -1,11 +1,13 @@
 import React from 'react';
-import { View, Text, Image, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import WardrobeItemImage from '../Closet/WardrobeItemImage';
 
 type WardrobeItem = {
   id: string;
   name?: string;
   type?: string;
   image_url: string;
+  image_path?: string;
   created_at?: string;
 };
 
@@ -41,7 +43,7 @@ export default function RecentlyAddedRow({ items=[], onPressItem, onAddPress }: 
               onPress={() => onPressItem?.(item)}
               activeOpacity={0.8}
             >
-              <Image source={{ uri: item.image_url }} style={styles.image} />
+              <WardrobeItemImage item={item} style={styles.image} />
               <Text style={styles.label}>{item.name || item.type || 'Unnamed'}</Text>
             </TouchableOpacity>
           ))}
@@ -79,7 +81,7 @@ const styles = StyleSheet.create({
   emptyWrap: {
     borderWidth: 1,
     borderColor: '#eee',
-    backgroundColor: '#fafafa',
+    backgroundColor: '#fafaff',
     borderRadius: 12,
     paddingVertical: 20,
     paddingHorizontal: 16,

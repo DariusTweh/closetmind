@@ -1,19 +1,38 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, Image, StyleSheet, ScrollView,
-  TouchableOpacity, Alert, ActivityIndicator, SafeAreaView
+  View, Text, StyleSheet, ScrollView,
+  Alert, ActivityIndicator
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
-import { colors, spacing, radii, typography, fontSizes } from '../lib/theme';
+import { spacing, typography } from '../lib/theme';
+import OutfitDetailActions from '../components/SavedOutfits/OutfitDetailActions';
+import OutfitDetailHeader from '../components/SavedOutfits/OutfitDetailHeader';
+import OutfitDetailItemCard from '../components/SavedOutfits/OutfitDetailItemCard';
+import { loadSavedOutfitItemsForDetail } from '../services/savedOutfitService';
 
-const DISPLAY_ORDER = ['onepiece', 'top', 'layer', 'bottom', 'shoes', 'outerwear', 'accessory'];
+function buildSubtitle(outfit: any) {
+  const context = String(outfit?.context || '').trim().replace(/\s+°F$/i, '').trim();
+  const weather = outfit?.weather;
+  if (context) return context;
+  if (weather !== undefined && weather !== null && weather !== '') {
+    return `${weather}°F`;
+  }
+  return 'Saved from your archive';
+}
 
 export default function OutfitDetailScreen({ route, navigation }) {
   const { outfit } = route.params;
+  const insets = useSafeAreaInsets();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isFavorited, setIsFavorited] = useState(false);
   const [userId, setUserId] = useState(null);
+  const savedItemCount = useMemo(
+    () => (Array.isArray(outfit?.resolvedItems) ? outfit.resolvedItems.length : Array.isArray(outfit?.items) ? outfit.items.length : 0),
+    [outfit.items, outfit.resolvedItems]
+  );
+  const subtitle = useMemo(() => buildSubtitle(outfit), [outfit]);
 
   useEffect(() => {
     const init = async () => {
@@ -31,51 +50,55 @@ export default function OutfitDetailScreen({ route, navigation }) {
 
   const loadItems = async (uid) => {
     // ✅ Check favorite status securely
-    const { data: favorite } = await supabase
+    const { data: favorite, error: favoriteError } = await supabase
       .from('saved_outfits')
       .select('is_favorite')
       .eq('id', outfit.id)
       .eq('user_id', uid)
-      .single();
+      .maybeSingle();
 
-    setIsFavorited(!!favorite?.is_favorite);
-
-    const ids = Array.isArray(outfit.items) ? outfit.items.map(i => i.id) : [];
-    if (ids.length === 0) {
-      setItems([]);
-      setLoading(false);
-      return;
+    if (favoriteError) {
+      console.error('❌ Failed to load favorite state:', favoriteError.message);
+    } else {
+      setIsFavorited(!!favorite?.is_favorite);
     }
 
-    // ✅ Secure wardrobe query
-    const { data: wardrobeItems, error } = await supabase
-      .from('wardrobe')
-      .select('*')
-      .in('id', ids)
-      .eq('user_id', uid);
-
-    if (error) {
-      console.error('❌ Failed to load wardrobe items:', error.message);
+    try {
+      const detailedOutfit = await loadSavedOutfitItemsForDetail({
+        outfit,
+        userId: uid,
+      });
+      setItems(detailedOutfit?.resolvedItems || []);
+    } catch (error: any) {
+      console.error('❌ Failed to load outfit items:', error?.message || error);
       Alert.alert('Error', 'Could not load outfit details.');
-      setItems([]);
-    } else {
-      const withReasons = ids.map(id => {
-        const wardrobeItem = wardrobeItems.find(w => w.id === id);
-        const reason = outfit.items.find(i => i.id === id)?.reason || '';
-        return wardrobeItem ? { ...wardrobeItem, reason } : null;
-      }).filter(Boolean);
-
-      const sorted = withReasons.sort(
-        (a, b) =>
-          (DISPLAY_ORDER.indexOf(a.main_category) !== -1 ? DISPLAY_ORDER.indexOf(a.main_category) : 99) -
-          (DISPLAY_ORDER.indexOf(b.main_category) !== -1 ? DISPLAY_ORDER.indexOf(b.main_category) : 99)
-      );
-
-      setItems(sorted);
+      setItems(Array.isArray(outfit?.resolvedItems) ? outfit.resolvedItems : Array.isArray(outfit?.items) ? outfit.items : []);
     }
 
     setLoading(false);
   };
+
+  const handleOpenItem = useCallback(
+    (item: any) => {
+      if (!item) return;
+
+      if (item.source_type === 'external') {
+        if (!item.product_url) {
+          Alert.alert('No product link', 'This saved item does not have a product page attached yet.');
+          return;
+        }
+
+        navigation.navigate('ImportBrowser', {
+          initialUrl: item.product_url,
+          initialTitle: item.title || item.name || 'Saved product',
+        });
+        return;
+      }
+
+      navigation.navigate('StyleItemScreen', { item });
+    },
+    [navigation],
+  );
 
   const handleDelete = async () => {
     const { error } = await supabase
@@ -107,56 +130,36 @@ export default function OutfitDetailScreen({ route, navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.safe}>
-      {/* Fixed Header */}
-      <View style={styles.headerRow}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.icon}>←</Text>
-        </TouchableOpacity>
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      <OutfitDetailHeader
+        title={outfit.name || 'Untitled Fit'}
+        subtitle={subtitle}
+        itemCount={items.length || savedItemCount}
+        season={outfit.season}
+        isFavorited={isFavorited}
+        onBack={() => navigation.goBack()}
+        onToggleFavorite={toggleFavorite}
+      />
 
-        <View style={styles.titleContainer}>
-          <Text style={styles.title}>{outfit.name || 'Untitled Fit'}</Text>
-          <Text style={styles.context}>
-            {outfit.context || ''} {outfit.weather || ''}°F
-          </Text>
-        </View>
-
-        <TouchableOpacity onPress={toggleFavorite}>
-          <Text style={styles.icon}>{isFavorited ? '❤️' : '🤍'}</Text>
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView contentContainerStyle={[styles.container, { paddingBottom: 132 + Math.max(insets.bottom, 10) }]}>
         {loading ? (
-          <ActivityIndicator size="large" color="#999" style={{ marginTop: 40 }} />
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator size="large" color="rgba(28, 28, 28, 0.72)" />
+            <Text style={styles.loadingText}>Loading saved look</Text>
+          </View>
         ) : (
           items.map(item => (
-            <View key={item.id} style={styles.itemCard}>
-              <Image source={{ uri: item.image_url }} style={styles.itemImage} />
-              <View style={styles.itemInfo}>
-                <Text style={styles.itemTitle}>{item.name || item.type}</Text>
-                <Text style={styles.itemReason}>{item.reason || '(locked)'}</Text>
-              </View>
-            </View>
+            <OutfitDetailItemCard key={item.id} item={item} onPress={() => handleOpenItem(item)} />
           ))
         )}
         <View style={{ height: 24 }} />
       </ScrollView>
 
-      {/* Bottom Actions */}
-<View style={styles.bottomBar}>
-  <TouchableOpacity
-    style={[styles.tryOnButton, (loading || items.length === 0) && { opacity: 0.6 }]}
-    onPress={() => navigation.navigate('TryOn', { items })}
-    disabled={loading || items.length === 0}
-  >
-    <Text style={styles.tryOnText}>Try On</Text>
-  </TouchableOpacity>
-
-  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
-    <Text style={styles.deleteText}>Delete Outfit</Text>
-  </TouchableOpacity>
-</View>
+      <OutfitDetailActions
+        onTryOn={() => navigation.navigate('TryOn', { items })}
+        onDelete={handleDelete}
+        disabled={loading || items.length === 0}
+      />
     </SafeAreaView>
   );
 }
@@ -165,103 +168,20 @@ export default function OutfitDetailScreen({ route, navigation }) {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: '#fafaff',
   },
   container: {
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.xxl, // ~80
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
-    paddingBottom: spacing.sm + 4,
-    backgroundColor: colors.background,
   },
-  icon: {
-    fontSize: fontSizes.md,
-    color: colors.textPrimary,
-    padding: spacing.xs,
-    textAlign: 'center',
-  },
-  titleContainer: {
-    flex: 1,
+  loadingWrap: {
+    marginTop: spacing.xl * 1.5,
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  title: {
-    fontSize: fontSizes.lg,
-    fontWeight: '600',
-    color: colors.textPrimary,
-    textAlign: 'center',
+  loadingText: {
+    marginTop: spacing.sm,
+    fontSize: 14,
+    color: 'rgba(28, 28, 28, 0.72)',
+    fontFamily: typography.fontFamily,
   },
-  context: {
-    fontSize: fontSizes.sm,
-    color: colors.textSecondary,
-    marginTop: 2,
-    textAlign: 'center',
-  },
-  itemCard: {
-    flexDirection: 'row',
-    backgroundColor: colors.cardBackground,
-    borderRadius: radii.lg,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  itemImage: {
-    width: 100,
-    height: 100,
-    borderRadius: radii.md,
-    backgroundColor: colors.border,
-    marginRight: spacing.md,
-  },
-  itemInfo: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  itemTitle: {
-    fontSize: fontSizes.base,
-    fontWeight: '600',
-    color: colors.textPrimary,
-    marginBottom: spacing.xs,
-  },
-  itemReason: {
-    fontSize: fontSizes.sm,
-    color: colors.textMuted,
-    lineHeight: 20,
-  },
-  bottomBar: {
-  position: 'absolute',
-  bottom: spacing.xl,
-  left: spacing.lg,
-  right: spacing.lg,
-  flexDirection: 'row',
-  gap: spacing.sm,
-},
-tryOnButton: {
-  flex: 1,
-  backgroundColor: colors.accentSecondary,
-  paddingVertical: spacing.lg,
-  borderRadius: radii.md,
-  alignItems: 'center',
-},
-tryOnText: {
-  color: colors.textPrimary,
-  fontWeight: '600',
-  fontSize: fontSizes.base,
-},
-deleteButton: {
-  flex: 1,
-  backgroundColor: colors.danger,
-  paddingVertical: spacing.lg,
-  borderRadius: radii.md,
-  alignItems: 'center',
-},
 });

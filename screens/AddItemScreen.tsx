@@ -1,700 +1,677 @@
-// screens/AddItemScreen.tsx
-import React, { useRef, useState,useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, Image, TouchableOpacity, Alert, ScrollView,
-  ActivityIndicator, StyleSheet, SafeAreaView, Modal, Platform
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
-import { File, Directory, Paths } from 'expo-file-system';
-
-
-import { WebView } from 'react-native-webview';
+import { File, Paths } from 'expo-file-system';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import AddCaptureDock from '../components/AddItem/AddCaptureDock';
+import AddCaptureStage from '../components/AddItem/AddCaptureStage';
+import AddCaptureTopBar from '../components/AddItem/AddCaptureTopBar';
+import AddItemDetailsSheet from '../components/AddItem/AddItemDetailsSheet';
+import { apiPost } from '../lib/api';
+import {
+  extractNormalizedTags,
+  type TaggedFashionItem,
+  type TaggingImportContext,
+  type TaggingResponse,
+} from '../lib/tagging';
 import { supabase } from '../lib/supabase';
-import { colors, spacing, radii, typography, fontSizes } from '../lib/theme';
-import { useNavigation ,useRoute } from '@react-navigation/native';
+import { colors, spacing, typography } from '../lib/theme';
+import { buildWardrobeInsertPayload } from '../lib/wardrobePayload';
+import {
+  insertWardrobeItemWithCompatibility,
+  uploadWardrobeImageBytes,
+} from '../lib/wardrobeStorage';
 
-
-
-// ---------- Types ----------
 type ImportMeta = {
-  method: 'photos' | 'pick' | 'autoscan' | 'manual';
+  method: 'camera' | 'photos' | 'pick' | 'autoscan' | 'manual';
   source_url?: string | null;
+  product_url?: string | null;
   source_domain?: string | null;
+  retailer?: string | null;
   retailer_name?: string | null;
   brand?: string | null;
   price?: number | null;
+  retail_price?: number | null;
   currency?: string | null;
   source_image_url?: string | null;
+  original_image_url?: string | null;
+  source_type?: string | null;
+  source_id?: string | null;
+  external_product_id?: string | null;
+  source_title?: string | null;
 };
 
 type RouteParams = {
-  // when you build ImportBrowserScreen, navigate here with these params
   importedImages?: { uri: string }[];
   importMeta?: ImportMeta;
 };
 
-// Minimal fallback colors to avoid undefined errors if theme isn't wired yet
-const F = {
-  primary: '#0a84ff',
-  text: '#111',
-  textMuted: '#666',
-  bg: '#fff',
-  border: '#ddd',
-  accent: '#7c3aed',
+type SelectedImage = {
+  uri: string;
 };
 
+function buildTagImportContext(
+  meta: ImportMeta | null,
+  sourceImageUrl?: string | null,
+): TaggingImportContext {
+  return {
+    source_url: meta?.source_url ?? meta?.product_url ?? null,
+    product_url: meta?.product_url ?? meta?.source_url ?? null,
+    source_domain: meta?.source_domain ?? null,
+    retailer: meta?.retailer ?? meta?.retailer_name ?? null,
+    retailer_name: meta?.retailer_name ?? null,
+    brand: meta?.brand ?? null,
+    price: meta?.price ?? meta?.retail_price ?? null,
+    retail_price: meta?.retail_price ?? meta?.price ?? null,
+    currency: meta?.currency ?? null,
+    source_image_url: sourceImageUrl ?? meta?.source_image_url ?? null,
+    original_image_url: meta?.original_image_url ?? sourceImageUrl ?? meta?.source_image_url ?? null,
+    source_type: meta?.source_type ?? null,
+    source_id: meta?.source_id ?? null,
+    external_product_id: meta?.external_product_id ?? null,
+    source_title: meta?.source_title ?? null,
+  };
+}
+
+const CACHE_DIR = Paths.cache.uri + 'imports';
+
+async function ensureCacheDir() {
+  const info = await FileSystem.getInfoAsync(CACHE_DIR);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(CACHE_DIR, { intermediates: true });
+  }
+}
+
+function guessExtFromUrl(url: string) {
+  return (url.split('?')[0].match(/\.([a-z0-9]{3,4})$/i)?.[1] || 'jpg').toLowerCase();
+}
+
+function safeNameFromUrl(url: string) {
+  return `${Date.now()}_${Math.floor(Math.random() * 1e6)}_${url
+    .replace(/^https?:\/\//, '')
+    .replace(/[^\w.-]+/g, '_')}.${guessExtFromUrl(url)}`;
+}
+
+async function ensureLocalUri(uri: string) {
+  if (!/^https?:\/\//i.test(uri)) return uri;
+
+  await ensureCacheDir();
+  const destination = `${CACHE_DIR}/${safeNameFromUrl(uri)}`;
+  const info = await FileSystem.getInfoAsync(destination);
+  if (info.exists) return destination;
+
+  const { uri: localUri } = await FileSystem.downloadAsync(uri, destination);
+  return localUri;
+}
+
+function getMimeType(uri: string) {
+  const ext = uri.split('?')[0].split('.').pop()?.toLowerCase();
+  if (ext === 'png') return 'image/png';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  return 'image/jpeg';
+}
+
+async function uploadImage(
+  uri: string,
+  userId: string,
+): Promise<{ imagePath: string; imageUrl: string | null; accessUrl: string | null }> {
+  const localUri = await ensureLocalUri(uri);
+  const extension = localUri.split('.').pop()?.split('?')[0] || 'jpg';
+  const mimeType = getMimeType(localUri);
+  const file = new File(localUri);
+  const info = await file.info();
+
+  if (!info.exists) {
+    throw new Error(`File does not exist at ${file.uri}`);
+  }
+
+  const bytes = await file.bytes();
+  if (!bytes?.length) {
+    throw new Error('File read produced 0 bytes');
+  }
+
+  return uploadWardrobeImageBytes({
+    bytes,
+    contentType: mimeType,
+    extension,
+    userId,
+  });
+}
+
 export default function AddItemScreen() {
-  const navigation = useNavigation();
-  const route = useRoute();
+  const navigation = useNavigation<any>();
+  const route = useRoute<any>();
+  const cameraRef = useRef<CameraView | null>(null);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
-  // Core state
-  const [images, setImages] = useState<{ uri: string }[]>([]);
+  const [images, setImages] = useState<SelectedImage[]>([]);
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
-  const selectedImage = selectedImageIndex != null ? images[selectedImageIndex] : null;
-
   const [name, setName] = useState('');
   const [type, setType] = useState('');
   const [color, setColor] = useState('');
   const [vibes, setVibes] = useState('');
   const [season, setSeason] = useState('');
-
-  const [isLoading, setIsLoading] = useState(false);
+  const [importMeta, setImportMeta] = useState<ImportMeta | null>(null);
   const [manualOverride, setManualOverride] = useState(false);
+  const [detailsVisible, setDetailsVisible] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [loadingLabel, setLoadingLabel] = useState('Saving item');
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
 
-  const [importMeta, setImportMeta] = useState<ImportMeta | null>(null);
+  const selectedImage = useMemo(
+    () => (selectedImageIndex != null && images[selectedImageIndex] ? images[selectedImageIndex] : null),
+    [images, selectedImageIndex],
+  );
+  const hasSelectedImage = Boolean(selectedImage);
+  const hasCameraPermission = Boolean(cameraPermission?.granted);
+  const canAskCameraPermission = cameraPermission?.canAskAgain !== false;
 
-  // Accept images/meta from ImportBrowser later
+  const applyImportedImages = useCallback((nextImages: SelectedImage[], meta?: ImportMeta | null) => {
+    if (!nextImages.length) return;
+
+    const previousCount = images.length;
+    setImages((prev) => [...prev, ...nextImages]);
+    setSelectedImageIndex(previousCount + nextImages.length - 1);
+    setDetailsVisible(false);
+    if (meta) {
+      setImportMeta(meta);
+    }
+  }, [images.length]);
+
   useEffect(() => {
     const params = (route.params || {}) as RouteParams;
     if (params.importedImages?.length) {
-      setImages(prev => [...prev, ...params.importedImages!]);
-      if (selectedImageIndex == null) setSelectedImageIndex(0);
+      applyImportedImages(
+        params.importedImages.map((image) => ({ uri: image.uri })),
+        params.importMeta ?? { method: 'pick' },
+      );
+    } else if (params.importMeta) {
+      setImportMeta(params.importMeta);
     }
-    if (params.importMeta) setImportMeta(params.importMeta);
-  }, [route.params]);
+  }, [applyImportedImages, route.params]);
 
-  // ---------- File helpers (fixes iOS nested path error) ----------
-  const CACHE_DIR = FileSystem.cacheDirectory + 'imports';
-  const ensureCacheDir = async () => {
-    const info = await FileSystem.getInfoAsync(CACHE_DIR);
-    if (!info.exists) await FileSystem.makeDirectoryAsync(CACHE_DIR, { intermediates: true });
-  };
-  const guessExtFromUrl = (url: string) => (url.split('?')[0].match(/\.([a-z0-9]{3,4})$/i)?.[1] || 'jpg').toLowerCase();
-  const safeNameFromUrl = (url: string) => `${Date.now()}_${Math.floor(Math.random()*1e6)}_${url.replace(/^https?:\/\//,'').replace(/[^\w.-]+/g,'_')}.${guessExtFromUrl(url)}`;
-  const ensureLocalUri = async (uri: string) => {
-    if (!/^https?:\/\//i.test(uri)) return uri; // already file://
-    await ensureCacheDir();
-    const dest = `${CACHE_DIR}/${safeNameFromUrl(uri)}`;
-    const info = await FileSystem.getInfoAsync(dest);
-    if (info.exists) return dest;
-    const { uri: localUri } = await FileSystem.downloadAsync(uri, dest);
-    return localUri;
-  };
-  const getMimeType = (uri: string) => {
-    const ext = uri.split('?')[0].split('.').pop()?.toLowerCase();
-    return ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
-  };
-const uploadImage = async (uri: string): Promise<string> => {
-  // 1. Make sure this local URI is valid; e.g. file://... or content://...
-  const localUri = await ensureLocalUri(uri);  // you already have this helper
+  const resetComposer = useCallback(() => {
+    setImages([]);
+    setSelectedImageIndex(null);
+    setImportMeta(null);
+    setName('');
+    setType('');
+    setColor('');
+    setVibes('');
+    setSeason('');
+    setManualOverride(false);
+    setDetailsVisible(false);
+  }, []);
 
-  // 2. Derive file metadata
-  const fileExt = localUri.split('.').pop()?.split('?')[0] || 'jpg';
-  const mimeType = getMimeType(localUri);  // your helper to guess mime
-  const fileName = `${Date.now()}_${Math.floor(Math.random() * 1e6)}.${fileExt}`;
+  const navigateToVerdict = useCallback((item: any) => {
+    if (!item) return;
+    navigation.navigate('ItemVerdict', {
+      itemId: item.id,
+      item,
+      source: 'add',
+      autoSaved: item?.wardrobe_status === 'owned',
+    });
+  }, [navigation]);
 
-  // 3. Create a File object with the localUri
-  //    If localUri is already a file path (file://), then:
-  const file = new File(localUri);  
+  const showDirectSaveAlert = useCallback((item: any, message = 'Item added to your closet.') => {
+    Alert.alert('Saved', message, [
+      {
+        text: 'Done',
+        style: 'cancel',
+        onPress: resetComposer,
+      },
+      {
+        text: 'Get Verdict',
+        onPress: () => {
+          resetComposer();
+          navigateToVerdict(item);
+        },
+      },
+    ]);
+  }, [navigateToVerdict, resetComposer]);
 
-  // Optionally, confirm existence
-  const info = await file.info();  
-  if (!info.exists) {
-    throw new Error(`File does not exist at ${file.uri}`);
-  }
+  const showBatchSaveAlert = useCallback((savedCount: number, totalCount: number) => {
+    const title = savedCount === totalCount ? 'Saved' : 'Partially Saved';
+    const message = savedCount === totalCount
+      ? `${savedCount} ${savedCount === 1 ? 'item was' : 'items were'} added to your closet.`
+      : `${savedCount} of ${totalCount} items were added to your closet.`;
 
-  // 4. Prepare FormData
-  const form = new FormData();
-  // Append the file. Key must match what Supabase expects.
-  // Based on Supabase Storage API docs, you send the binary file itself as the body of POST
-  // For example, using `/storage/v1/object/clothes/:fileName`
-  form.append('file', {
-    uri: file.uri,
-    name: fileName,
-    type: mimeType,
-  } as any);  
-  // Note: we use `file.uri` here as a `file://` uri
+    Alert.alert(title, message, [
+      {
+        text: 'Done',
+        onPress: resetComposer,
+      },
+    ]);
+  }, [resetComposer]);
 
-  // 5. Do fetch POST to Supabase Storage API endpoint
-  const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL!;
-  const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
-  const bucket = 'clothes';
+  const replaceSelectedImage = useCallback((nextImage: SelectedImage, meta?: ImportMeta | null) => {
+    if (selectedImageIndex == null || !images.length) {
+      setImages([nextImage]);
+      setSelectedImageIndex(0);
+    } else {
+      const nextImages = [...images];
+      nextImages[selectedImageIndex] = nextImage;
+      setImages(nextImages);
+    }
 
-  const uploadEndpoint = `${SUPABASE_URL}/storage/v1/object/${bucket}/${fileName}`;
+    setDetailsVisible(false);
+    if (meta) {
+      setImportMeta(meta);
+    }
+  }, [images, selectedImageIndex]);
 
-  const response = await fetch(uploadEndpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      // Note: the content-type for FormData is set automatically (multipart/form-data)
-    },
-    body: form,
-  });
+  const captureFromSystemCamera = useCallback(async ({ replaceCurrent = false }: { replaceCurrent?: boolean } = {}) => {
+    const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permissionResult.granted) {
+      Alert.alert('Camera permission required', 'Allow camera access to capture a clothing item.');
+      return;
+    }
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Supabase upload failed: ${response.status} ${text}`);
-  }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.92,
+    });
 
-  // 6. Return the public URL
-  const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${fileName}`;
-  return publicUrl;
-};
-  // ---------- Photos picker ----------
-  const pickImages = async () => {
+    if (result.canceled || !result.assets?.length) return;
+
+    const nextImage = { uri: result.assets[0].uri };
+    const nextMeta: ImportMeta = { method: 'camera' };
+
+    if (replaceCurrent) {
+      replaceSelectedImage(nextImage, nextMeta);
+      return;
+    }
+
+    applyImportedImages([nextImage], nextMeta);
+  }, [applyImportedImages, replaceSelectedImage]);
+
+  const captureFromStage = useCallback(async () => {
+    if (hasSelectedImage) {
+      await captureFromSystemCamera({ replaceCurrent: true });
+      return;
+    }
+
+    if (!hasCameraPermission) {
+      const status = await requestCameraPermission();
+      if (!status.granted) {
+        Alert.alert('Camera permission required', 'Enable camera access to capture an item directly.');
+      }
+      return;
+    }
+
+    if (!cameraRef.current || !cameraReady) {
+      await captureFromSystemCamera();
+      return;
+    }
+
+    try {
+      const result = await cameraRef.current.takePictureAsync({
+        quality: 0.92,
+      });
+      if (!result?.uri) return;
+      applyImportedImages([{ uri: result.uri }], { method: 'camera' });
+    } catch (error: any) {
+      Alert.alert('Capture failed', error?.message || 'Try again in a moment.');
+    }
+  }, [
+    applyImportedImages,
+    cameraReady,
+    captureFromSystemCamera,
+    hasCameraPermission,
+    hasSelectedImage,
+    requestCameraPermission,
+  ]);
+
+  const pickImages = useCallback(async () => {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permissionResult.granted) return Alert.alert('Permission to access media library is required!');
+    if (!permissionResult.granted) {
+      Alert.alert('Photo access required', 'Allow photo library access to import a clothing item.');
+      return;
+    }
+
     const result = await ImagePicker.launchImageLibraryAsync({
       allowsMultipleSelection: true,
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.9,
       selectionLimit: 10,
     });
-    if (!result.canceled) {
-      setImages(prev => [...prev, ...result.assets.map(a => ({ uri: a.uri }))]);
-      if (selectedImageIndex == null && (result.assets.length || images.length)) setSelectedImageIndex(0);
-      setImportMeta({ method: 'photos' });
+
+    if (result.canceled || !result.assets?.length) return;
+
+    applyImportedImages(
+      result.assets.map((asset) => ({ uri: asset.uri })),
+      { method: 'photos' },
+    );
+  }, [applyImportedImages]);
+
+  const removeSelectedImage = useCallback(() => {
+    if (selectedImageIndex == null) return;
+
+    const nextImages = images.filter((_, index) => index !== selectedImageIndex);
+    setImages(nextImages);
+    setSelectedImageIndex(nextImages.length ? Math.min(selectedImageIndex, nextImages.length - 1) : null);
+    setDetailsVisible(false);
+
+    if (!nextImages.length) {
+      setImportMeta(null);
     }
-  };
+  }, [images, selectedImageIndex]);
 
-  // ---------- Single Import (selected image) ----------
-const handleImportSelected = async () => {
-  if (!selectedImage) return Alert.alert('Select an image first.');
-
-  // @ts-ignore
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError || !user) return Alert.alert('Error', 'You must be logged in to add clothing.');
-
-  setIsLoading(true);
-  setUploadProgress({ current: 0, total: 1 });
-
-  try {
-    console.log('🔁 Uploading selected image...');
-    const uploadedUrl = await uploadImage(selectedImage.uri);
-    const imageUrl = `${uploadedUrl}?t=${Date.now()}`; // cache buster
-    console.log('🖼️ Uploaded image URL:', imageUrl);
-
-    // Optional HEAD check
-    try {
-      const headCheck = await fetch(imageUrl, { method: 'HEAD' });
-      const contentType = headCheck.headers.get('content-type');
-      console.log('🔍 HEAD content-type:', contentType);
-      if (!contentType?.startsWith('image/')) {
-        throw new Error('Uploaded file is not a valid image');
-      }
-    } catch (headErr) {
-      console.warn('⚠️ HEAD check failed:', headErr.message);
-      throw new Error('Unable to verify image file after upload.');
-    }
-
-    // Tag unless manual
-    let tags: any = undefined;
-    if (!manualOverride) {
-      console.log('🧠 Sending to AI tagger...');
-      const tagResponse = await fetch('http://192.168.0.187:5000/tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_url: imageUrl }),
-      });
-
-      const raw = (await tagResponse.text()).trim();
-      const cleaned = raw.replace(/^```(?:json)?\n?|```$/g, '').trim();
-
-      try {
-        tags = JSON.parse(cleaned);
-        console.log('✅ AI Tags:', tags);
-      } catch {
-        throw new Error('AI Tagging parse failed');
-      }
-
-      if (tags?.error) throw new Error(tags.error);
-    }
-
-    const finalName = (name?.trim() || tags?.name || tags?.type || '').toString();
-    const validSeasons = ['spring', 'summer', 'fall', 'winter', 'all'];
-    let finalSeason = manualOverride ? season?.trim().toLowerCase() : tags?.season?.toLowerCase();
-    if (!validSeasons.includes(finalSeason)) finalSeason = 'all';
-
-    const manualCategory = manualOverride ? (type || '').split(' ')[0]?.toLowerCase() : undefined;
-    const importMethod = importMeta?.method || (manualOverride ? 'manual' : 'photos');
-    const sourceImageForThis = /^https?:\/\//i.test(selectedImage.uri)
-      ? selectedImage.uri
+  const importSingleImage = useCallback(async ({
+    image,
+    userId,
+    openVerdict = false,
+  }: {
+    image: SelectedImage;
+    userId: string;
+    openVerdict?: boolean;
+  }) => {
+    const uploadedImage = await uploadImage(image.uri, userId);
+    const imageUrl = uploadedImage.accessUrl;
+    const sourceImageForThis = /^https?:\/\//i.test(image.uri)
+      ? image.uri
       : (importMeta?.source_image_url ?? null);
 
-    const insertPayload: any = {
-      user_id: user.id,
-      name: finalName,
-      type: manualOverride ? type : tags?.type,
-      main_category: manualOverride ? manualCategory : tags?.main_category,
-      color: manualOverride ? color : tags?.color,
-      primary_color: manualOverride ? color : tags?.primary_color,
-      secondary_colors: manualOverride ? [] : tags?.secondary_colors,
-      pattern_description: manualOverride ? '' : tags?.pattern_description,
-      vibe_tags: manualOverride ? (
-        vibes ? vibes.split(',').map(v => v.trim().toLowerCase()) : []
-      ) : tags?.vibe_tags,
-      season: finalSeason,
-      image_url: imageUrl,
-      source_url: importMeta?.source_url ?? null,
-      source_domain: importMeta?.source_domain ?? null,
-      retailer_name: importMeta?.retailer_name ?? null,
-      brand: importMeta?.brand ?? (tags?.brand ?? null),
-      retail_price: importMeta?.price ?? null,
-      currency: importMeta?.currency ?? null,
-      source_image_url: sourceImageForThis ?? null,
-      import_method: importMethod,
-    };
-
-    console.log('📦 Insert Payload:', insertPayload);
-
-    // @ts-ignore
-    const { error: insertError } = await supabase.from('wardrobe').insert([insertPayload]);
-    if (insertError) throw new Error(insertError.message);
-
-    Alert.alert('Imported', 'Item added to your closet.');
-  } catch (err: any) {
-    console.error('❌ Import Failed:', err);
-    Alert.alert('Error importing item', err?.message || 'Unknown error');
-  } finally {
-    setIsLoading(false);
-    setUploadProgress({ current: 0, total: 0 });
-  }
-};
-
-  // ---------- Style Selected (Try‑On only; no insert) ----------
-  const handleStyleSelected = async () => {
-    if (!selectedImage) return Alert.alert('Select an image first.');
-    try {
-      setIsLoading(true);
-      // Ensure public URL for tagging
-      const anchorPublicUrl = /^https?:\/\//i.test(selectedImage.uri)
-        ? selectedImage.uri
-        : await uploadImage(selectedImage.uri); // upload to get public URL, but DO NOT insert wardrobe
-
-      // Tag
-      const tagResponse = await fetch('http://192.168.0.187:5000/tag', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_url: anchorPublicUrl }),
-      });
-      const raw = (await tagResponse.text()).trim();
-      const cleaned = raw.replace(new RegExp('^```(?:json)?\\n?|```$', 'g'), '').trim();
-      const tags = JSON.parse(cleaned);
-      if (tags?.error) throw new Error(tags.error);
-
-      const lockedItem = {
-        id: `ext_${Date.now()}`,
-        name: name?.trim() || tags?.name || importMeta?.brand || 'Imported Item',
-        type: tags?.type,
-        main_category: tags?.main_category,
-        primary_color: tags?.primary_color,
-        secondary_colors: tags?.secondary_colors || [],
-        pattern_description: tags?.pattern_description || null,
-        vibe_tags: tags?.vibe_tags || [],
-        season: tags?.season || 'all',
-        image_url: anchorPublicUrl,
-        meta: {
-          source_url: importMeta?.source_url ?? null,
-          source_domain: importMeta?.source_domain ?? null,
-          retailer_name: importMeta?.retailer_name ?? null,
-          brand: importMeta?.brand ?? null,
-          retail_price: importMeta?.price ?? null,
-          currency: importMeta?.currency ?? null,
-          source_image_url: importMeta?.source_image_url ?? null,
-        },
-      } as const;
-
-      // @ts-ignore – swap for your actual route name and params
-      navigation.navigate('StyleItem', { lockedItem, externalTryOn: true });
-    } catch (err: any) {
-      Alert.alert('Try‑On error', err?.message || 'Failed to start styling.');
-    } finally {
-      setIsLoading(false);
+    if (!imageUrl) {
+      throw new Error('Unable to resolve uploaded image for tagging.');
     }
-  };
 
-  // ---------- Batch Save (existing flow) ----------
-// ---------- Batch Save (existing flow) ----------
-const handleSaveAll = async () => {
-  if (!images.length) return Alert.alert('Select or import image(s) first.');
-
-  // @ts-ignore
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError || !user) return Alert.alert('Error', 'You must be logged in to add clothing.');
-
-  setIsLoading(true);
-  setUploadProgress({ current: 0, total: images.length });
-
-  try {
-    for (const image of images) {
-      setUploadProgress(prev => ({ ...prev, current: prev.current + 1 }));
-      console.log(`🔁 Processing image: ${image.uri}`);
-
-      // Step 1: Upload image FIRST to get a public URL
-      let imageUrl: string;
-      try {
-        imageUrl = await uploadImage(image.uri);
-        console.log(`🖼️ Uploaded image to: ${imageUrl}`);
-      } catch (uploadErr) {
-        console.error('❌ Upload error:', uploadErr);
-        Alert.alert('Upload Failed', uploadErr.message || 'Image upload failed.');
-        continue;
+    let tags: TaggedFashionItem | undefined;
+    if (!manualOverride) {
+      const tagResponse = await apiPost('/tag', {
+        image_url: imageUrl,
+        import_context: buildTagImportContext(importMeta, sourceImageForThis ?? imageUrl),
+      });
+      const taggingPayload = (await tagResponse.json()) as TaggingResponse;
+      tags = extractNormalizedTags(taggingPayload);
+      if (!tagResponse.ok || taggingPayload?.error) {
+        throw new Error(taggingPayload?.error || 'AI tagging failed');
       }
+    }
 
-      // Step 2: AI Tagging (only if not manual)
-      let tags: any = undefined;
-      if (!manualOverride) {
+    const importMethod = importMeta?.method || (manualOverride ? 'manual' : 'photos');
+    const insertPayload = buildWardrobeInsertPayload({
+      userId,
+      uploadedImage,
+      normalizedTags: tags,
+      importMeta: {
+        ...importMeta,
+        source_image_url: sourceImageForThis ?? importMeta?.source_image_url ?? null,
+        original_image_url: sourceImageForThis ?? importMeta?.original_image_url ?? importMeta?.source_image_url ?? null,
+      },
+      manualOverride,
+      manualFields: {
+        name,
+        type,
+        color,
+        vibes,
+        season,
+      },
+      wardrobeStatus: openVerdict ? 'scanned_candidate' : 'owned',
+      importMethod,
+      sourceType: importMethod === 'camera' ? 'wardrobe_capture' : 'manual_upload',
+      sourceTitleFallback: importMeta?.source_title ?? null,
+    });
+
+    const { data: insertedItem, error: insertError } = await insertWardrobeItemWithCompatibility(insertPayload);
+    if (insertError) {
+      throw new Error(insertError.message);
+    }
+
+    return insertedItem;
+  }, [
+    color,
+    importMeta,
+    manualOverride,
+    name,
+    season,
+    type,
+    vibes,
+  ]);
+
+  const handleImportSelected = useCallback(async ({
+    openVerdict = false,
+  }: {
+    openVerdict?: boolean;
+  } = {}) => {
+    const targetImages = openVerdict
+      ? (selectedImage ? [selectedImage] : [])
+      : images;
+
+    if (!targetImages.length) {
+      Alert.alert('Select an image first.');
+      return;
+    }
+
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      Alert.alert('Error', 'You must be logged in to add clothing.');
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadingLabel(
+      openVerdict
+        ? 'Preparing verdict'
+        : targetImages.length > 1
+          ? 'Saving items'
+          : 'Saving item',
+    );
+    setUploadProgress({ current: 1, total: targetImages.length });
+
+    try {
+      const insertedItems: any[] = [];
+      const failures: string[] = [];
+
+      for (let index = 0; index < targetImages.length; index += 1) {
+        setUploadProgress({ current: index + 1, total: targetImages.length });
         try {
-          const tagResponse = await fetch('http://192.168.0.187:5000/tag', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_url: imageUrl }),
+          const insertedItem = await importSingleImage({
+            image: targetImages[index],
+            userId: user.id,
+            openVerdict,
           });
-
-          const raw = (await tagResponse.text()).trim();
-          const cleaned = raw.replace(/^```(?:json)?\n?|```$/g, '').trim();
-          tags = JSON.parse(cleaned);
-
-          if (tags?.error) throw new Error(tags.error);
-          console.log('✅ AI Tags:', tags);
-        } catch (taggingErr: any) {
-          console.error('❌ AI Tagging Failed:', taggingErr);
-          Alert.alert('AI Tagging Failed', taggingErr.message || 'Could not tag image.');
-          continue;
+          insertedItems.push(insertedItem);
+        } catch (error: any) {
+          failures.push(error?.message || 'Unknown import error');
+          if (openVerdict) {
+            throw error;
+          }
         }
       }
 
-      // Step 3: Prepare metadata
-      const finalName = (name?.trim() || tags?.name || tags?.type || '').toString();
-      const validSeasons = ['spring','summer','fall','winter','all'];
-      let finalSeason = manualOverride ? season?.trim().toLowerCase() : tags?.season?.toLowerCase();
-      if (!validSeasons.includes(finalSeason)) finalSeason = 'all';
-
-      const manualCategory = manualOverride ? (type || '').split(' ')[0]?.toLowerCase() : undefined;
-      const importMethod = importMeta?.method || (manualOverride ? 'manual' : 'photos');
-      const sourceImageForThis = /^https?:\/\//i.test(image.uri) ? image.uri : (importMeta?.source_image_url ?? null);
-
-      const insertPayload: any = {
-        user_id: user.id,
-        name: finalName,
-        type: manualOverride ? type : tags?.type,
-        main_category: manualOverride ? manualCategory : tags?.main_category,
-        color: manualOverride ? color : tags?.color,
-        primary_color: manualOverride ? color : tags?.primary_color,
-        secondary_colors: manualOverride ? [] : tags?.secondary_colors,
-        pattern_description: manualOverride ? '' : tags?.pattern_description,
-        vibe_tags: manualOverride ? (
-          vibes ? vibes.split(',').map(v => v.trim().toLowerCase()) : []
-        ) : tags?.vibe_tags,
-        season: finalSeason,
-        image_url: imageUrl,
-        // Meta
-        source_url: importMeta?.source_url ?? null,
-        source_domain: importMeta?.source_domain ?? null,
-        retailer_name: importMeta?.retailer_name ?? null,
-        brand: importMeta?.brand ?? (tags?.brand ?? null),
-        retail_price: importMeta?.price ?? null,
-        currency: importMeta?.currency ?? null,
-        source_image_url: sourceImageForThis ?? null,
-        import_method: importMethod,
-      };
-
-      console.log('📦 Insert Payload:', insertPayload);
-
-      // Step 4: Insert to Supabase
-      const { error: insertError } = await supabase.from('wardrobe').insert([insertPayload]);
-      if (insertError) {
-        console.error('❌ Insert Error:', insertError.message);
-        Alert.alert('Insert Error', insertError.message);
-      } else {
-        console.log('✅ Inserted into wardrobe table.');
+      if (openVerdict) {
+        if (!insertedItems[0]) {
+          throw new Error('Unable to prepare verdict for this item.');
+        }
+        navigateToVerdict(insertedItems[0]);
+        return;
       }
+
+      if (!insertedItems.length) {
+        throw new Error(failures[0] || 'No items were imported.');
+      }
+
+      if (insertedItems.length === 1 && targetImages.length === 1) {
+        showDirectSaveAlert(insertedItems[0]);
+      } else {
+        showBatchSaveAlert(insertedItems.length, targetImages.length);
+      }
+    } catch (error: any) {
+      console.error('AddItem import failed:', error);
+      Alert.alert('Error importing item', error?.message || 'Unknown error');
+    } finally {
+      setIsLoading(false);
+      setUploadProgress({ current: 0, total: 0 });
     }
+  }, [
+    color,
+    images,
+    importSingleImage,
+    importMeta,
+    manualOverride,
+    name,
+    navigateToVerdict,
+    season,
+    selectedImage,
+    showBatchSaveAlert,
+    showDirectSaveAlert,
+    type,
+    vibes,
+  ]);
 
-    Alert.alert('Upload complete!');
-    setImages([]);
-    setSelectedImageIndex(null);
-    setName('');
-    setType('');
-    setColor('');
-    setVibes('');
-    setSeason('');
-    setImportMeta(null);
-  } catch (err: any) {
-    console.error('❌ Fatal Error:', err);
-    Alert.alert('Error saving item', err?.message || 'Unknown error');
-  } finally {
-    setIsLoading(false);
-    setUploadProgress({ current: 0, total: 0 });
-  }
-};
-  
+  const handleClose = useCallback(() => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+      return;
+    }
+    navigation.navigate('MainTabs', { screen: 'Closet' });
+  }, [navigation]);
 
-  // ---------- UI ----------
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: F.bg }}>
-      <ScrollView contentContainerStyle={{ padding: 16 }}>
-        <Text style={{ fontSize: 24, fontWeight: '700', color: F.text, marginBottom: 12 }}>Add Clothing</Text>
+    <SafeAreaView style={styles.safe}>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={8}
+      >
+        <View style={styles.flex}>
+          <AddCaptureTopBar
+            canSave={hasSelectedImage}
+            loading={isLoading}
+            saveLabel={images.length > 1 ? `Save ${images.length}` : 'Save'}
+            onClose={handleClose}
+            onOpenDetails={() => setDetailsVisible(true)}
+            onSave={() => {
+              void handleImportSelected();
+            }}
+          />
 
-        {/* Preview strip */}
-        <View style={{ minHeight: 112, marginBottom: 12 }}>
-          {images.length ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {images.map((img, idx) => (
-                <TouchableOpacity
-                  key={`${img.uri}-${idx}`}
-                  onPress={() => setSelectedImageIndex(idx)}
-                  style={{
-                    marginRight: 10,
-                    borderRadius: 12,
-                    padding: 2,
-                    borderWidth: selectedImageIndex === idx ? 2 : 0,
-                    borderColor: selectedImageIndex === idx ? F.accent : 'transparent',
-                  }}
-                >
-                  <Image source={{ uri: img.uri }} style={{ width: 100, height: 100, borderRadius: 10 }} />
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          ) : (
-            <TouchableOpacity
-              onPress={pickImages}
-              style={{ height: 112, borderWidth: 1, borderStyle: 'dashed', borderColor: F.border, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }}
-            >
-              <Text style={{ color: F.textMuted }}>Tap to add photos</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Action bar for selected image */}
-        {selectedImage && (
-          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
-            <TouchableOpacity onPress={handleImportSelected} style={{ flex: 1, padding: 12, backgroundColor: F.primary, borderRadius: 10, alignItems: 'center' }} disabled={isLoading}>
-              <Text style={{ color: 'white', fontWeight: '600' }}>Import item from selected</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleStyleSelected} style={{ flex: 1, padding: 12, borderWidth: 1, borderColor: F.border, borderRadius: 10, alignItems: 'center' }} disabled={isLoading}>
-              <Text style={{ color: F.text }}>Style item (Try‑On)</Text>
-            </TouchableOpacity>
+          <View style={styles.stageWrap}>
+            <AddCaptureStage
+              selectedImage={selectedImage}
+              images={images}
+              selectedImageIndex={selectedImageIndex}
+              importMethod={importMeta?.method ?? null}
+              cameraRef={cameraRef}
+              hasCameraPermission={hasCameraPermission}
+              canAskForPermission={canAskCameraPermission}
+              onRequestPermission={() => {
+                void requestCameraPermission();
+              }}
+              onCameraReady={() => {
+                setCameraReady(true);
+              }}
+              onRemove={removeSelectedImage}
+              onSelectImage={setSelectedImageIndex}
+            />
           </View>
-        )}
 
-        {/* Auto/Manual toggle */}
-        <View style={{ flexDirection: 'row', marginBottom: 12 }}>
-          <TouchableOpacity onPress={() => setManualOverride(false)} style={{ paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1, borderColor: manualOverride ? F.border : F.primary, borderRadius: 8, marginRight: 8, backgroundColor: manualOverride ? 'transparent' : '#eef5ff' }}>
-            <Text style={{ color: manualOverride ? F.text : F.primary }}>Auto</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setManualOverride(true)} style={{ paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1, borderColor: manualOverride ? F.primary : F.border, borderRadius: 8 }}>
-            <Text style={{ color: manualOverride ? F.primary : F.text }}>Manual</Text>
-          </TouchableOpacity>
-          
+          <AddCaptureDock
+            hasImage={hasSelectedImage}
+            loading={isLoading}
+            onLibrary={() => {
+              void pickImages();
+            }}
+            onCapture={() => {
+              void captureFromStage();
+            }}
+            onVerdict={() => {
+              void handleImportSelected({ openVerdict: true });
+            }}
+            verdictDisabled={!hasSelectedImage}
+          />
+
+          <AddItemDetailsSheet
+            visible={detailsVisible}
+            manualOverride={manualOverride}
+            name={name}
+            type={type}
+            color={color}
+            vibes={vibes}
+            season={season}
+            onClose={() => setDetailsVisible(false)}
+            onSetManualOverride={setManualOverride}
+            onSetName={setName}
+            onSetType={setType}
+            onSetColor={setColor}
+            onSetVibes={setVibes}
+            onSetSeason={setSeason}
+          />
         </View>
+      </KeyboardAvoidingView>
 
-        <TextInput placeholder="Name (optional)" value={name} onChangeText={setName} placeholderTextColor={F.textMuted} style={{ borderWidth: 1, borderColor: F.border, borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 10, color: F.text }} />
-
-        {manualOverride && (
-          <>
-            <TextInput placeholder="Type" value={type} onChangeText={setType} placeholderTextColor={F.textMuted} style={{ borderWidth: 1, borderColor: F.border, borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 10, color: F.text }} />
-            <TextInput placeholder="Color" value={color} onChangeText={setColor} placeholderTextColor={F.textMuted} style={{ borderWidth: 1, borderColor: F.border, borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 10, color: F.text }} />
-            <TextInput placeholder="Vibes (comma separated)" value={vibes} onChangeText={setVibes} placeholderTextColor={F.textMuted} style={{ borderWidth: 1, borderColor: F.border, borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 10, color: F.text }} />
-            <TextInput placeholder="Season" value={season} onChangeText={setSeason} placeholderTextColor={F.textMuted} style={{ borderWidth: 1, borderColor: F.border, borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 10, color: F.text }} />
-          </>
-        )}
-
-        {isLoading && (
-          <View style={{ alignItems: 'center', marginVertical: 12 }}>
-            <ActivityIndicator />
-            <Text style={{ marginTop: 6, color: F.text }}>Uploading {uploadProgress.current} of {uploadProgress.total}</Text>
+      {isLoading ? (
+        <View style={styles.loadingOverlay}>
+          <View style={styles.loadingCard}>
+            <ActivityIndicator size="small" color={colors.textPrimary} />
+            <Text style={styles.loadingTitle}>{loadingLabel}</Text>
+            <Text style={styles.loadingText}>
+              Uploading {uploadProgress.current} of {uploadProgress.total}
+            </Text>
           </View>
-        )}
-
-        {/* Batch Save */}
-        <TouchableOpacity onPress={handleSaveAll} style={{ backgroundColor: F.primary, padding: 14, borderRadius: 12, alignItems: 'center' }} disabled={isLoading}>
-          <Text style={{ color: 'white', fontWeight: '600' }}>{isLoading ? 'Uploading…' : 'Save Clothing'}</Text>
-        </TouchableOpacity>
-      </ScrollView>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
 
-
-// ---- Styles ----
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: colors.background },
-  container: { padding: spacing.lg, paddingBottom: spacing.xxl },
-  title: { ...typography.header, marginBottom: spacing.lg, textAlign: 'center' },
-
-  modeSwitch: {
-    flexDirection: 'row',
-    backgroundColor: colors.backgroundAlt,
-    borderRadius: radii.pill,
-    overflow: 'hidden',
-    marginBottom: spacing.md,
+  safe: {
+    flex: 1,
+    backgroundColor: colors.background,
   },
-  modeBtn: { flex: 1, paddingVertical: spacing.md, alignItems: 'center' },
-  modeActive: { backgroundColor: colors.textPrimary },
-  modeText: { color: colors.textMuted, fontWeight: '500', fontSize: fontSizes.sm },
-  modeTextActive: { color: colors.textOnAccent, fontWeight: '600', fontSize: fontSizes.sm },
-
-  imageBox: {
-    height: 260,
-    borderRadius: radii.lg,
-    backgroundColor: colors.cardBackground,
-    justifyContent: 'center',
+  flex: {
+    flex: 1,
+  },
+  stageWrap: {
+    flex: 1,
+    paddingBottom: spacing.sm,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(30, 27, 24, 0.18)',
     alignItems: 'center',
-    marginBottom: spacing.lg,
-    overflow: 'hidden',
-    borderColor: colors.inputBorder,
-    borderWidth: 1,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
   },
-  placeholder: { alignItems: 'center' },
-  placeholderText: { color: colors.textMuted, fontSize: fontSizes.sm },
-
-  importPanel: {
-    backgroundColor: colors.cardBackground,
-    borderRadius: radii.lg,
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.inputBorder,
-    marginBottom: spacing.md,
-  },
-  row: { flexDirection: 'row', alignItems: 'center' },
-
-  toggleContainer: {
-    flexDirection: 'row',
-    backgroundColor: colors.backgroundAlt,
-    borderRadius: radii.pill,
-    overflow: 'hidden',
-    marginTop: spacing.md,
-    marginBottom: spacing.md,
-  },
-  toggleButton: { flex: 1, paddingVertical: spacing.md, alignItems: 'center' },
-  toggleActive: { backgroundColor: colors.textPrimary },
-  toggleText: { color: colors.textMuted, fontWeight: '500', fontSize: fontSizes.sm },
-  toggleTextActive: { color: colors.textOnAccent, fontWeight: '600', fontSize: fontSizes.sm },
-
-  input: {
-    backgroundColor: colors.cardBackground,
-    borderColor: colors.inputBorder,
-    borderWidth: 1,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    fontSize: fontSizes.base,
-    color: colors.textPrimary,
-    marginBottom: spacing.md,
-  },
-
-  smallBtn: {
-    backgroundColor: colors.textPrimary,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  smallBtnText: { color: colors.textOnAccent, fontWeight: '600' },
-
-  sectionTitle: { ...typography.subheader, marginBottom: spacing.sm },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginHorizontal: -spacing.sm,
-  },
-  storeCard: {
-    width: '48%',
-    marginHorizontal: '1%',
-    backgroundColor: colors.cardBackground,
-    borderRadius: radii.md,
+  loadingCard: {
+    width: '100%',
+    maxWidth: 300,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceContainerLowest,
+    paddingHorizontal: spacing.lg,
     paddingVertical: spacing.lg,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.inputBorder,
-    marginBottom: spacing.sm,
+    shadowColor: colors.textPrimary,
+    shadowOpacity: 0.06,
+    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 20,
+    elevation: 1,
   },
-  storeName: { color: colors.textPrimary, fontWeight: '600' },
-
-  thumbWrap: {
-    width: 100, height: 100, marginRight: spacing.sm,
-    borderRadius: radii.md, overflow: 'hidden', borderWidth: 1, borderColor: colors.inputBorder,
+  loadingTitle: {
+    marginTop: spacing.sm,
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    fontFamily: typography.fontFamily,
   },
-  thumbImg: { width: '100%', height: '100%' },
-  thumbSelected: {
-    position: 'absolute', right: 6, top: 6,
-    backgroundColor: colors.accent, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999,
+  loadingText: {
+    marginTop: 6,
+    fontSize: 13,
+    color: colors.textSecondary,
   },
-  thumbCheck: { color: colors.textOnAccent, fontWeight: '700', fontSize: 12 },
-
-  addBtn: {
-    marginTop: spacing.sm, alignSelf: 'flex-start',
-    backgroundColor: colors.accent, paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
-    borderRadius: radii.md,
-  },
-  addBtnText: { ...typography.button },
-
-  saveButton: {
-    marginTop: spacing.lg,
-    backgroundColor: colors.accent,
-    paddingVertical: spacing.md,
-    borderRadius: radii.md,
-    alignItems: 'center',
-  },
-  saveText: { ...typography.button },
-
-  browserBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.background,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.inputBorder,
-  },
-  browserBtn: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.cardBackground,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.inputBorder,
-  },
-  browserBtnText: { color: colors.textPrimary, fontWeight: '600' },
-  webLoading: {
-    position: 'absolute',
-    right: spacing.lg,
-    top: 54,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.cardBackground,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.inputBorder,
-  },
-  browserActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    padding: spacing.lg,
-    borderTopWidth: 1,
-    borderTopColor: colors.inputBorder,
-    backgroundColor: colors.background,
-  },
-  pickBtn: {
-    flex: 1,
-    marginRight: spacing.sm,
-    backgroundColor: colors.textPrimary,
-    paddingVertical: spacing.md,
-    borderRadius: radii.md,
-    alignItems: 'center',
-  },
-  pickBtnText: { color: colors.textOnAccent, fontWeight: '700' },
 });

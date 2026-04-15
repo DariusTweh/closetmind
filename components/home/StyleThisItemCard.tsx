@@ -5,14 +5,15 @@ import {
   ScrollView,
   StyleSheet,
   TouchableOpacity,
-  Image,
 } from 'react-native';
+import WardrobeItemImage from '../Closet/WardrobeItemImage';
 
 type WardrobeItem = {
   id: string;
   name?: string;
   type?: string;
   image_url: string;
+  image_path?: string;
 };
 
 type OutfitSuggestion = {
@@ -24,10 +25,17 @@ type Props = {
   item?: WardrobeItem | null;
   suggestions: OutfitSuggestion[];
   onPullNew: () => void;
+  onOpenStyle?: () => void;
   loading: boolean;
 };
 
-export default function StyleThisItemCard({ item, suggestions=[], onPullNew, loading }: Props) {
+export default function StyleThisItemCard({
+  item,
+  suggestions = [],
+  onPullNew,
+  onOpenStyle,
+  loading,
+}: Props) {
   const hasItem = !!item?.id;
   const validSuggestions = Array.isArray(suggestions) ? suggestions : [];
   const noSuggestions = !loading && hasItem && validSuggestions.length === 0;
@@ -36,9 +44,16 @@ export default function StyleThisItemCard({ item, suggestions=[], onPullNew, loa
     <View style={styles.card}>
       <View style={styles.headerRow}>
         <Text style={styles.title}>Style This Item</Text>
-        <TouchableOpacity onPress={onPullNew}>
-          <Text style={styles.pullNew}>🔁 New Item</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          {hasItem && onOpenStyle ? (
+            <TouchableOpacity onPress={onOpenStyle} style={styles.headerActionButton}>
+              <Text style={styles.headerActionText}>Open Styler</Text>
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity onPress={onPullNew} style={styles.headerActionButton}>
+            <Text style={styles.headerActionText}>New Item</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Empty: no item selected */}
@@ -54,7 +69,7 @@ export default function StyleThisItemCard({ item, suggestions=[], onPullNew, loa
       ) : (
         <>
           <View style={styles.itemRow}>
-            <Image source={{ uri: item!.image_url }} style={styles.mainImage} />
+            <WardrobeItemImage item={item!} style={styles.mainImage} />
             <Text style={styles.itemLabel}>{item!.name || item!.type || 'Unnamed'}</Text>
           </View>
 
@@ -86,9 +101,9 @@ export default function StyleThisItemCard({ item, suggestions=[], onPullNew, loa
                   style={styles.suggestionRow}
                 >
                   {sug.items.map((subItem) => (
-                    <Image
+                    <WardrobeItemImage
                       key={subItem.id}
-                      source={{ uri: subItem.image_url }}
+                      item={subItem}
                       style={styles.outfitImage}
                     />
                   ))}
@@ -97,6 +112,12 @@ export default function StyleThisItemCard({ item, suggestions=[], onPullNew, loa
               </View>
             ))
           )}
+
+          {hasItem && onOpenStyle ? (
+            <TouchableOpacity style={styles.openStylerButton} onPress={onOpenStyle}>
+              <Text style={styles.openStylerButtonText}>Compare More Looks</Text>
+            </TouchableOpacity>
+          ) : null}
         </>
       )}
     </View>
@@ -120,8 +141,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
+  headerActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
   title: { fontSize: 18, fontWeight: '700', color: '#111' },
-  pullNew: { fontSize: 14, color: '#007aff', fontWeight: '600' },
+  headerActionButton: {
+    backgroundColor: '#f3f5f2',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  headerActionText: { fontSize: 13, color: '#1c1c1c', fontWeight: '700' },
 
   // Item
   itemRow: { alignItems: 'center', marginBottom: 14 },
@@ -148,14 +179,14 @@ const styles = StyleSheet.create({
   emptyWrap: {
     borderWidth: 1,
     borderColor: '#eee',
-    backgroundColor: '#fafafa',
+    backgroundColor: '#fafaff',
     borderRadius: 12,
     paddingVertical: 20,
     paddingHorizontal: 16,
     alignItems: 'center',
   },
   emptyWrapSoft: {
-    backgroundColor: '#fafafa',
+    backgroundColor: '#fafaff',
     borderRadius: 12,
     paddingVertical: 16,
     paddingHorizontal: 14,
@@ -177,4 +208,15 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   emptyBtnText: { color: '#fff', fontWeight: '600' },
+  openStylerButton: {
+    marginTop: 4,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: '#1c1c1c',
+  },
+  openStylerButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
 });

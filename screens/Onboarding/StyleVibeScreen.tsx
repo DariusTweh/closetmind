@@ -1,20 +1,23 @@
-// screens/Onboarding/StyleVibeScreen.tsx
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, SafeAreaView } from 'react-native';
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import OnboardingChoiceCard from '../../components/Onboarding/OnboardingChoiceCard';
+import OnboardingScaffold from '../../components/Onboarding/OnboardingScaffold';
+import { supabase } from '../../lib/supabase';
+import { colors, spacing, typography } from '../../lib/theme';
 
 const STYLE_OPTIONS = [
-  { id: 'minimalist', label: 'Minimalist' },
-  { id: 'streetwear', label: 'Streetwear' },
-  { id: 'classy', label: 'Classy' },
-  { id: 'athleisure', label: 'Athleisure' },
-  { id: 'trendy', label: 'Trendy' },
-  { id: 'y2k', label: 'Y2K' },
-  { id: 'unsure', label: 'Still figuring it out' },
+  { id: 'minimalist', label: 'Minimalist', description: 'Clean lines, restraint, strong basics.' },
+  { id: 'streetwear', label: 'Streetwear', description: 'Relaxed, directional, graphic, current.' },
+  { id: 'classy', label: 'Classy', description: 'Elevated, polished, put together.' },
+  { id: 'athleisure', label: 'Athleisure', description: 'Performance comfort with a sharp casual edge.' },
+  { id: 'trendy', label: 'Trendy', description: 'Fashion-forward, quick to evolve, high novelty.' },
+  { id: 'y2k', label: 'Y2K', description: 'Playful, nostalgic, silhouette-driven.' },
+  { id: 'unsure', label: 'Still figuring it out', description: 'Let the app learn and refine from your closet.' },
 ];
 
 export default function StyleVibeScreen() {
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const [selected, setSelected] = useState<string[]>([]);
 
   const toggleSelection = (id: string) => {
@@ -25,99 +28,85 @@ export default function StyleVibeScreen() {
     }
   };
 
-  const handleNext = () => {
-    navigation.navigate('UseIntent');
+  const handleNext = async () => {
+    try {
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData?.user) throw new Error('User not found');
+
+      const userId = userData.user.id;
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ style_tags: selected })
+        .eq('id', userId);
+
+      if (updateError) throw updateError;
+
+      navigation.navigate('ToneSelect' as never);
+    } catch (error) {
+      console.error('❌ Failed to save style tags:', error);
+      Alert.alert('Error', 'Could not save your style direction.');
+    }
   };
 
-  const renderItem = ({ item }: any) => (
-    <TouchableOpacity
-      style={[styles.card, selected.includes(item.id) && styles.selectedCard]}
-      onPress={() => toggleSelection(item.id)}
-    >
-      <View style={styles.placeholderBox} />
-      <Text style={styles.label}>{item.label}</Text>
-    </TouchableOpacity>
-  );
-
   return (
-    <SafeAreaView style={styles.container}>
-      <Text style={styles.title}>How would you describe your overall style?</Text>
-      <Text style={styles.subtitle}>Select 1–3 options</Text>
-      <FlatList
-        data={STYLE_OPTIONS}
-        renderItem={renderItem}
-        keyExtractor={(item) => item.id}
-        numColumns={2}
-        contentContainerStyle={styles.list}
-      />
-      <TouchableOpacity style={styles.nextButton} onPress={handleNext} disabled={selected.length === 0}>
-        <Text style={styles.nextText}>Next</Text>
-      </TouchableOpacity>
-    </SafeAreaView>
+    <OnboardingScaffold
+      step="Step 3 of 6"
+      title="What style energy already feels like you?"
+      subtitle="Pick up to three directions. This becomes the first layer of your style identity."
+      scroll
+      footer={
+        <TouchableOpacity
+          activeOpacity={0.84}
+          style={[styles.primaryButton, selected.length === 0 && styles.buttonDisabled]}
+          onPress={handleNext}
+          disabled={selected.length === 0}
+        >
+          <Text style={styles.primaryButtonText}>Continue</Text>
+        </TouchableOpacity>
+      }
+    >
+      <View style={styles.grid}>
+        {STYLE_OPTIONS.map((item) => (
+          <View key={item.id} style={styles.gridItem}>
+            <OnboardingChoiceCard
+              label={item.label}
+              description={item.description}
+              selected={selected.includes(item.id)}
+              onPress={() => toggleSelection(item.id)}
+              compact
+            />
+          </View>
+        ))}
+      </View>
+    </OnboardingScaffold>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fdf8f3',
-    paddingHorizontal: 20,
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginHorizontal: -6,
   },
-  title: {
-    fontSize: 22,
-    fontWeight: '600',
-    color: '#111',
-    marginTop: 20,
+  gridItem: {
+    width: '50%',
+    paddingHorizontal: 6,
+    marginBottom: spacing.sm + 2,
   },
-  subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 20,
-  },
-  list: {
-    paddingBottom: 120,
-  },
-  card: {
-    width: '47%',
-    aspectRatio: 1,
-    margin: '1.5%',
-    backgroundColor: '#fff',
-    borderRadius: 20,
-    overflow: 'hidden',
+  primaryButton: {
+    minHeight: 54,
+    borderRadius: 16,
+    backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
-    borderColor: '#ddd',
-    borderWidth: 1,
   },
-  selectedCard: {
-    borderColor: '#f4a261',
-    borderWidth: 2,
+  primaryButtonText: {
+    color: colors.textOnAccent,
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: typography.fontFamily,
   },
-  placeholderBox: {
-    width: '80%',
-    height: '60%',
-    backgroundColor: '#e0e0e0',
-    borderRadius: 10,
-  },
-  label: {
-    fontSize: 14,
-    color: '#111',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  nextButton: {
-    position: 'absolute',
-    bottom: 30,
-    left: 20,
-    right: 20,
-    backgroundColor: '#f4a261',
-    paddingVertical: 14,
-    borderRadius: 30,
-    alignItems: 'center',
-  },
-  nextText: {
-    fontSize: 16,
-    color: '#fff',
-    fontWeight: '600',
+  buttonDisabled: {
+    opacity: 0.45,
   },
 });

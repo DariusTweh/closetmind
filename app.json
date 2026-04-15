@@ -1,29 +1,71 @@
 {
   "expo": {
-    "name": "Mycloset",
-    "slug": "Mycloset",
+    "name": "Closana",
+    "slug": "closana",
     "version": "1.0.0",
     "orientation": "portrait",
+    "scheme": "closana",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#fafaff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dariustweh.closana",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Closana uses your camera so you can capture wardrobe items directly.",
+        "NSPhotoLibraryUsageDescription": "Closana uses your photo library so you can upload closet items, onboarding outfit photos, and profile images.",
+        "NSLocationWhenInUseUsageDescription": "Closana uses your location to personalize weather-aware outfit recommendations.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#fafaff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.dariustweh.closana"
     },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Closana uses your photo library so you can upload closet items, onboarding outfit photos, and profile images."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Closana uses your camera so you can capture wardrobe items directly."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Closana uses your location to personalize weather-aware outfit recommendations."
+        }
+      ]
+    ],
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "56837ca8-cfe2-4189-89e8-e25ec896d8ff"
+      }
+    },
+    "owner": "tinosolutions"
   }
 }

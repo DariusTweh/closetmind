@@ -9,7 +9,18 @@ import {
 } from 'react-native';
 
 import { colors, spacing, radii, typography } from '../../lib/theme';
-const MAIN_CATEGORIES = ['all','top', 'bottom', 'shoes', 'outerwear', 'accessory', 'layer', 'onepiece'];
+const MAIN_CATEGORIES = ['all', 'top', 'bottom', 'shoes', 'outerwear', 'accessory', 'layer', 'onepiece'];
+
+const FILTER_LABELS = {
+  all: 'All',
+  top: 'Tops',
+  bottom: 'Bottoms',
+  shoes: 'Shoes',
+  outerwear: 'Outerwear',
+  accessory: 'Accessories',
+  layer: 'Layers',
+  onepiece: 'One-Piece',
+};
 
 export default function ClosetFilterPills({ activeFilter, setActiveFilter }) {
   return (
@@ -23,11 +34,11 @@ export default function ClosetFilterPills({ activeFilter, setActiveFilter }) {
               onPress={() => setActiveFilter(filter)}
               style={[
                 styles.pill,
-                { backgroundColor: isActive ? '#111' : '#eaeaea' },
+                isActive ? styles.activePill : styles.inactivePill,
               ]}
             >
               <Text style={[styles.text, isActive && styles.activeText]}>
-                {filter}
+                {FILTER_LABELS[filter] || filter}
               </Text>
             </TouchableOpacity>
           );
@@ -39,18 +50,35 @@ export default function ClosetFilterPills({ activeFilter, setActiveFilter }) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm - 1,
   },
   pill: {
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    paddingHorizontal: spacing.md - 3,
     borderRadius: radii.pill,
-    marginRight: spacing.sm,
+    marginRight: 6,
+  },
+  activePill: {
+    backgroundColor: '#1c1c1c',
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 8,
+    elevation: 1,
+  },
+  inactivePill: {
+    backgroundColor: '#eef0f2',
+    borderWidth: 1,
+    borderColor: '#daddd8',
   },
   text: {
-    fontSize: 14,
+    fontSize: 11.5,
     fontWeight: '500',
     fontFamily: typography.fontFamily,
+    color: colors.textPrimary,
+  },
+  activeText: {
+    color: colors.textOnAccent,
   },
 });

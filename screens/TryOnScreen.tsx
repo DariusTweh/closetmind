@@ -5,30 +5,54 @@
 // - Loads a fallback base model from profiles if not passed
 // - Shows a large preview area and simple item chips; "Generate" just toggles a mock result
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
-  Image,
   ScrollView,
-  TouchableOpacity,
-  ActivityIndicator,
   StyleSheet,
   Alert,
-  SafeAreaView,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library';
 import { useNavigation, useRoute } from '@react-navigation/native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { apiPost } from '../lib/api';
+import { describeResolvedPrivateMediaSource, resolvePrivateMediaUrl } from '../lib/privateMedia';
+import { toStyleRequestWardrobeItem } from '../lib/styleRequestWardrobe';
 import { supabase } from '../lib/supabase';
-import { colors, spacing, radii, fontSizes } from '../lib/theme';
+import { colors, spacing, typography } from '../lib/theme';
+import TryOnActionBar from '../components/TryOn/TryOnActionBar';
+import TryOnHeader from '../components/TryOn/TryOnHeader';
+import TryOnPreviewStage from '../components/TryOn/TryOnPreviewStage';
+import TryOnSelectedTray from '../components/TryOn/TryOnSelectedTray';
 
 // ---- Types ----
 type WardrobeItem = {
   id: string;
+  source_type?: 'wardrobe' | 'external' | string | null;
+  source_subtype?: string | null;
+  external_item_id?: string | null;
+  is_saved_to_closet?: boolean | null;
   name?: string;
   type?: string;
   main_category?: string;
-  image_url: string;
+  image_url?: string;
+  image_path?: string;
   primary_color?: string;
+  color?: string;
+  subcategory?: string;
+  garment_function?: string | null;
+  fabric_weight?: string | null;
+  style_role?: string | null;
+  material_guess?: string | null;
+  silhouette?: string | null;
+  weather_use?: string[] | null;
+  occasion_tags?: string[] | null;
+  fit?: string | null;
+  fit_notes?: { fit?: string | null } | null;
+  tags?: string[];
+  vibe_tags?: string[];
 };
 
 type RouteParams = {
@@ -45,10 +69,38 @@ type RouteParams = {
   meta?: any;
   };
 };
-const BASE_URL = 'http://192.168.0.187:5000';
+
+const TRY_ON_POLL_FALLBACK_MS = 1500;
+const TRY_ON_MAX_POLL_ATTEMPTS = 120;
+
+function getTryOnStatusLabel(status?: string | null) {
+  switch (String(status || '').trim().toLowerCase()) {
+    case 'queued':
+      return 'Queued for generation...';
+    case 'processing':
+      return 'Generating your try-on preview...';
+    case 'failed':
+      return 'Try-on generation failed.';
+    case 'completed':
+      return 'Try-on preview ready.';
+    default:
+      return 'Preparing your try-on...';
+  }
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getImageExtensionFromUrl(url?: string | null) {
+  const normalized = String(url || '').split('?')[0].trim().toLowerCase();
+  const match = normalized.match(/\.(png|jpe?g|webp|heic)$/);
+  return match ? `.${match[1]}`.replace('.jpeg', '.jpg') : '.jpg';
+}
 
 export default function TryOnScreen() {
   const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
   const { params } = useRoute() as unknown as { params?: RouteParams };
    const mode = (params as any)?.mode;
   const lockedItem = (params as any)?.lockedItem;
@@ -58,11 +110,12 @@ export default function TryOnScreen() {
   const [baseModelUrl, setBaseModelUrl] = useState<string | undefined>(params?.baseModelUrl);
   const [selectedItems, setSelectedItems] = useState<WardrobeItem[]>([]);
   const [mockGeneratedUrl, setMockGeneratedUrl] = useState<string | null>(null);
+  const [tryOnJobId, setTryOnJobId] = useState<string | null>(null);
+  const [tryOnJobStatus, setTryOnJobStatus] = useState<string | null>(null);
   const [quickLoading, setQuickLoading] = useState(false);
-  const [quickError, setQuickError] = useState<string | null>(null);
-  const [tryonUrl, setTryonUrl] = useState<string | null>(null);
-  const [supportingItems, setSupportingItems] = useState<any[]>([]);
   const [hasSeededQuick, setHasSeededQuick] = useState(false);
+  const mountedRef = useRef(true);
+  const generateSequenceRef = useRef(0);
   // Seed selection
   useEffect(() => {
     const seed = (params?.items || params?.outfit || []) as WardrobeItem[];
@@ -71,6 +124,7 @@ export default function TryOnScreen() {
 
 useEffect(() => {
   let mounted = true;
+  mountedRef.current = true;
 
   (async () => {
     try {
@@ -85,7 +139,6 @@ useEffect(() => {
 
       // If passed through route params, prefer it
       if (params?.baseModelUrl) {
-        console.log("✅ Using baseModelUrl from route params:", params.baseModelUrl);
         setBaseModelUrl(params.baseModelUrl);
         return;
       }
@@ -93,7 +146,7 @@ useEffect(() => {
       // Otherwise, fetch from profile
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('ai_model_url')
+        .select('ai_model_path, ai_model_url')
         .eq('id', uid)
         .maybeSingle();
 
@@ -101,11 +154,22 @@ useEffect(() => {
         console.warn("⚠️ Profile fetch error:", error);
       }
 
-      if (profile?.ai_model_url && mounted) {
-        console.log("✅ Using ai_model_url from profile:", profile.ai_model_url);
-        setBaseModelUrl(profile.ai_model_url);
+      const resolvedModelUrl = await resolvePrivateMediaUrl({
+        path: profile?.ai_model_path,
+        legacyUrl: profile?.ai_model_url,
+      });
+      const resolvedModelSource = describeResolvedPrivateMediaSource({
+        path: profile?.ai_model_path,
+        legacyUrl: profile?.ai_model_url,
+      });
+
+      if (resolvedModelUrl && mounted) {
+        if (resolvedModelSource === 'legacy-storage-url') {
+          console.warn("⚠️ Using legacy model URL fallback from profile; ai_model_path is missing or stale.");
+        }
+        setBaseModelUrl(resolvedModelUrl);
       } else {
-        console.warn("⚠️ No ai_model_url found for user.");
+        console.warn("⚠️ No ai model image found for user.");
       }
     } catch (e) {
       console.error("🔥 TryOnScreen hydration error:", e);
@@ -116,12 +180,14 @@ useEffect(() => {
 
   return () => {
     mounted = false;
+    mountedRef.current = false;
+    generateSequenceRef.current += 1;
   };
 }, [params?.baseModelUrl]);
   // Quick "Try On" flow – when coming from ImportBrowserScreen with lockedItem
 useEffect(() => {
   if (mode !== 'quick' || !lockedItem) return;
-  if (!userId || !baseModelUrl) return;
+  if (!userId) return;
   if (hasSeededQuick) return; // ✅ don't run twice
 
   let cancelled = false;
@@ -129,21 +195,13 @@ useEffect(() => {
   const runQuick = async () => {
     try {
       setQuickLoading(true);
-      setQuickError(null);
 
-      const wardrobe = await loadWardrobeForTryOn();
-
-      const resp = await fetch(`${BASE_URL}/style-single-item`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          context: 'basic everyday outfit for quick try-on',
-          vibe: 'casual',
-          season: (lockedItem as any).season || 'all',
-          temperature: 70,
-          wardrobe,
-          locked_item: lockedItem,
-        }),
+      const resp = await apiPost('/style-single-item', {
+        context: 'basic everyday outfit for quick try-on',
+        vibe: 'casual',
+        season: (lockedItem as any).season || 'all',
+        temperature: 70,
+        locked_item: toStyleRequestWardrobeItem(lockedItem as any),
       });
 
       const data = await resp.json();
@@ -152,30 +210,31 @@ useEffect(() => {
       }
 
       const outfitIds: string[] = data.outfit.map((o: any) => o.id);
+      const supportingIds = Array.from(new Set(
+        outfitIds.filter((id) => id !== lockedItem.id)
+      ));
+      const supporting = await loadWardrobeItemsByIds(supportingIds);
       const wardrobeById: Record<string, WardrobeItem> = {};
-      wardrobe.forEach((w) => {
-        wardrobeById[w.id] = w;
+      supporting.forEach((item) => {
+        wardrobeById[item.id] = item;
       });
 
-      const supporting = outfitIds
+      const orderedSupporting = supportingIds
         .filter((id) => id !== lockedItem.id)
         .map((id) => wardrobeById[id])
         .filter(Boolean);
 
       if (cancelled) return;
 
-      setSupportingItems(supporting);
-
       const allItems: WardrobeItem[] = [
         lockedItem as WardrobeItem,
-        ...supporting,
+        ...orderedSupporting,
       ];
       setSelectedItems(allItems);
 
       setHasSeededQuick(true); // ✅ mark as done
     } catch (err: any) {
       console.error('Quick try-on seed error:', err);
-      if (!cancelled) setQuickError(err?.message || 'Failed to prepare quick outfit.');
     } finally {
       if (!cancelled) setQuickLoading(false);
     }
@@ -186,35 +245,104 @@ useEffect(() => {
   return () => {
     cancelled = true;
   };
-}, [mode, lockedItem, userId, baseModelUrl, hasSeededQuick]);
+}, [mode, lockedItem, userId, hasSeededQuick]);
 
 
 
   const hasAnythingToShow = useMemo(() => !!(mockGeneratedUrl || baseModelUrl), [mockGeneratedUrl, baseModelUrl]);
+  const isBusy = loading || quickLoading;
+  const busyStatusLabel = tryOnJobStatus
+    ? getTryOnStatusLabel(tryOnJobStatus)
+    : quickLoading
+      ? 'Styling your quick try-on...'
+      : 'Preparing your try-on...';
+
+  const pollTryOnJob = async (jobId: string, requestId: number, initialDelayMs?: number | null) => {
+    let nextDelayMs = Math.max(1000, Number(initialDelayMs) || TRY_ON_POLL_FALLBACK_MS);
+
+    for (let attempt = 0; attempt < TRY_ON_MAX_POLL_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) {
+        await delay(nextDelayMs);
+      }
+
+      if (!mountedRef.current || requestId !== generateSequenceRef.current) {
+        return;
+      }
+
+      const statusResponse = await apiPost('/tryon/status', { job_id: jobId });
+      const statusPayload = await statusResponse.json().catch(() => null);
+
+      if (!statusResponse.ok) {
+        throw new Error(statusPayload?.error || 'Failed to check try-on status.');
+      }
+
+      if (!mountedRef.current || requestId !== generateSequenceRef.current) {
+        return;
+      }
+
+      const nextStatus = String(statusPayload?.status || 'queued').trim().toLowerCase();
+      setTryOnJobId(statusPayload?.job_id || jobId);
+      setTryOnJobStatus(nextStatus);
+
+      if (nextStatus === 'completed') {
+        const resolvedTryOnUrl =
+          statusPayload?.tryon_url ||
+          (await resolvePrivateMediaUrl({
+            path: statusPayload?.image_path,
+            legacyUrl: statusPayload?.image_url,
+          }));
+
+        setMockGeneratedUrl(resolvedTryOnUrl || null);
+        setTryOnJobId(null);
+        return;
+      }
+
+      if (nextStatus === 'failed') {
+        throw new Error(statusPayload?.error || 'Try-on generation failed.');
+      }
+
+      nextDelayMs = Math.max(1000, Number(statusPayload?.poll_after_ms) || TRY_ON_POLL_FALLBACK_MS);
+    }
+
+    throw new Error('Try-on is taking longer than expected. Please check again in a moment.');
+  };
 
   const generateTryOnWithItems = async (items: WardrobeItem[]) => {
-    if (!items.length) {
+    const requestId = generateSequenceRef.current + 1;
+    generateSequenceRef.current = requestId;
+    const uniqueItems = Array.from(
+      new Map(
+        items
+          .filter((item) => isRealWardrobeItem(item) || item?.image_path || item?.image_url)
+          .map((item) => [item.image_path || item.image_url || item.id, item])
+      ).values()
+    );
+
+    if (!uniqueItems.length) {
       Alert.alert("Select items", "Pick at least one item to try on.");
       return;
     }
-    if (!baseModelUrl) {
-      Alert.alert("Missing model", "We couldn't find your base model.");
+    if (uniqueItems.length > 4) {
+      Alert.alert('Too many items', 'Pick up to 4 clothing items per try-on.');
       return;
     }
-    if (!userId) return;
 
     setLoading(true);
     setMockGeneratedUrl(null);
+    setTryOnJobId(null);
+    setTryOnJobStatus(null);
 
     try {
-      const response = await fetch(`${BASE_URL}/tryon/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: userId,
-          base_model_url: baseModelUrl,
-          clothing_image_urls: items.map((item) => item.image_url),
-        }),
+      const clothingItemIds = uniqueItems
+        .filter((item) => isRealWardrobeItem(item))
+        .map((item) => item.id);
+      const externalItems = uniqueItems
+        .filter((item) => !isRealWardrobeItem(item))
+        .map(buildExternalTryOnItem);
+      const response = await apiPost('/tryon/generate', {
+        async: true,
+        clothing_item_ids: clothingItemIds,
+        ...(externalItems.length ? { external_items: externalItems } : {}),
       });
 
       const data = await response.json();
@@ -223,22 +351,46 @@ useEffect(() => {
         throw new Error(data.error || "Failed to generate try-on image.");
       }
 
-      setMockGeneratedUrl(data.tryon_url);
+      if (data?.job_id) {
+        setTryOnJobId(data.job_id);
+        setTryOnJobStatus(String(data.status || 'queued').toLowerCase());
+        await pollTryOnJob(data.job_id, requestId, data.poll_after_ms);
+        return;
+      }
+
+      const resolvedTryOnUrl =
+        data.tryon_url ||
+        (await resolvePrivateMediaUrl({
+          path: data.image_path,
+          legacyUrl: data.image_url,
+        }));
+
+      setMockGeneratedUrl(resolvedTryOnUrl);
     } catch (err: any) {
+      if (requestId === generateSequenceRef.current && mountedRef.current) {
+        setTryOnJobStatus('failed');
+        setTryOnJobId(null);
+      }
       Alert.alert("Error", err.message || "Unknown error");
     } finally {
-      setLoading(false);
+      if (requestId === generateSequenceRef.current && mountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
   const handleGenerateTryOn = async () => {
     await generateTryOnWithItems(selectedItems);
   };
-  const loadWardrobeForTryOn = async () => {
-    // Adjust columns to match your wardrobe table
+
+  const loadWardrobeItemsByIds = async (ids: string[]) => {
+    if (!ids.length || !userId) return [];
+
     const { data, error } = await supabase
       .from('wardrobe')
-      .select('id, name, type, main_category, image_url, primary_color');
+      .select('id, name, type, main_category, image_url, image_path, primary_color')
+      .eq('user_id', userId)
+      .in('id', ids);
 
     if (error) throw error;
     return (data || []) as WardrobeItem[];
@@ -250,108 +402,108 @@ useEffect(() => {
     setSelectedItems(prev => prev.filter(i => i.id !== id));
   };
 
+const WARDROBE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isRealWardrobeId = (value: string | null | undefined) => {
+  const id = String(value || '').trim();
+  return !!id && !id.startsWith('ext_') && WARDROBE_UUID_PATTERN.test(id);
+};
+
+const isRealWardrobeItem = (item: WardrobeItem | null | undefined) => {
+  if (!item) return false;
+  if (item.source_type === 'external') return false;
+  if (item.is_saved_to_closet === false) return false;
+  if (item.external_item_id && item.source_type !== 'wardrobe') return false;
+  return isRealWardrobeId(item.id);
+};
+
+const buildExternalTryOnItem = (item: WardrobeItem) => ({
+  id: item.id || null,
+  source_type: 'external',
+  source_subtype: item.source_subtype || 'browser_import',
+  external_item_id: item.external_item_id || item.id || null,
+  is_saved_to_closet: false,
+  name: item.name || null,
+  type: item.type || null,
+  main_category: item.main_category || null,
+  image_url: item.image_url || null,
+  image_path: item.image_path || null,
+  color: item.primary_color || item.color || null,
+  subcategory: item.subcategory || item.type || null,
+  tags: Array.from(new Set([...(item.tags || []), ...(item.vibe_tags || [])].filter(Boolean))),
+  is_external: true,
+});
+
 const handleSaveMock = async () => {
-  if (!userId) return;
   if (!mockGeneratedUrl) {
     Alert.alert('Nothing to save', "Generate a try-on preview first.");
     return;
   }
 
   try {
-    const { error } = await supabase
-      .from('tryon_outfits')
-      .insert({
-        user_id: userId,
-        image_url: mockGeneratedUrl,
-        clothing_item_ids: selectedItems.map(item => item.id),
-      });
-
-    if (error) {
-      console.error("❌ Failed to save try-on outfit:", error.message);
-      Alert.alert('Error', 'Failed to save your try-on outfit.');
-    } else {
-      Alert.alert('Saved!', 'Your try-on preview has been saved successfully.');
+    const permission = await MediaLibrary.requestPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission required', 'Allow photo library access to save try-on results to your phone.');
+      return;
     }
+
+    const extension = getImageExtensionFromUrl(mockGeneratedUrl);
+    const destination = `${FileSystem.cacheDirectory || FileSystem.documentDirectory}tryon-${Date.now()}${extension}`;
+    const download = await FileSystem.downloadAsync(mockGeneratedUrl, destination);
+
+    await MediaLibrary.saveToLibraryAsync(download.uri);
+    await FileSystem.deleteAsync(download.uri, { idempotent: true });
+
+    Alert.alert('Saved', 'Your try-on image has been added to Photos.');
   } catch (err: any) {
-    Alert.alert('Error', err.message || 'Unexpected error');
+    Alert.alert('Save error', err.message || 'Could not save this try-on image to your phone.');
   }
 };
 
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.headerRow}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.icon}>←</Text>
-        </TouchableOpacity>
-        <Text style={styles.title}>Virtual Try‑On</Text>
-        <View style={{ width: 24 }} />
-      </View>
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      <TryOnHeader onBack={() => navigation.goBack()} />
 
-      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-        <View style={styles.previewCard}>
-          {loading ? (
-            <ActivityIndicator size="large" color="#888" />
-          ) : hasAnythingToShow ? (
-            <View style={{ width: '100%', height: '100%' }}>
-              <Image
-                source={{ uri: mockGeneratedUrl || baseModelUrl! }}
-                style={styles.previewImage}
-                resizeMode="contain"
-              />
-              {!!mockGeneratedUrl && (
-                <View style={styles.previewBadge}>
-                  <Text style={styles.previewBadgeText}>Try-On Result</Text>
-                </View>
-              )}
-            </View>
-          ) : (
-            <View style={styles.previewEmpty}>
-              <Text style={styles.previewEmptyText}>No model image yet</Text>
-              <Text style={styles.previewEmptySub}>Generate your base model in onboarding</Text>
-            </View>
-          )}
-        </View>
+      <ScrollView
+        contentContainerStyle={[
+          styles.container,
+          { paddingBottom: 132 + Math.max(insets.bottom, 10) },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        <TryOnPreviewStage
+          isBusy={isBusy}
+          hasAnythingToShow={hasAnythingToShow}
+          previewUrl={mockGeneratedUrl}
+          baseModelUrl={baseModelUrl}
+          busyStatusLabel={busyStatusLabel}
+          tryOnJobId={tryOnJobId}
+        />
 
-        <Text style={styles.sectionTitle}>Selected Items</Text>
-        {selectedItems.length === 0 ? (
-          <View style={styles.emptyRow}>
-            <Text style={styles.emptyRowText}>No items selected yet.</Text>
-            <Text style={styles.emptyRowHint}>Come from Style This Item / Generator / Saved Outfit.</Text>
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={styles.sectionEyebrow}>Selected Pieces</Text>
+            <Text style={styles.sectionTitle}>
+              {selectedItems.length
+                ? `${selectedItems.length} ${selectedItems.length === 1 ? 'item' : 'items'} ready`
+                : 'Choose the pieces to style'}
+            </Text>
           </View>
-        ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 4 }}>
-            {selectedItems.map(item => (
-              <View key={item.id} style={styles.itemChip}>
-                <Image source={{ uri: item.image_url }} style={styles.itemThumb} />
-                <Text numberOfLines={1} style={styles.itemName}>{item.name || item.type || 'Item'}</Text>
-                <TouchableOpacity onPress={() => handleRemoveItem(item.id)}>
-                  <Text style={styles.remove}>Remove</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </ScrollView>
-        )}
-
-        <View style={styles.buttonRow}>
-          <TouchableOpacity
-            style={[styles.btn, (!baseModelUrl || loading) && styles.btnDisabled]}
-            onPress={handleGenerateTryOn}
-            disabled={!baseModelUrl || loading}
-          >
-            <Text style={styles.btnText}>Generate</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.btnSecondary, (!mockGeneratedUrl || loading) && styles.btnDisabled]}
-            onPress={handleSaveMock}
-            disabled={!mockGeneratedUrl || loading}
-          >
-            <Text style={styles.btnSecondaryText}>Save</Text>
-          </TouchableOpacity>
         </View>
 
-        <View style={{ height: spacing.xl }} />
+        <TryOnSelectedTray
+          items={selectedItems}
+          onRemove={handleRemoveItem}
+        />
       </ScrollView>
+
+      <TryOnActionBar
+        onGenerate={handleGenerateTryOn}
+        onSave={handleSaveMock}
+        generateDisabled={!baseModelUrl || isBusy}
+        saveDisabled={!mockGeneratedUrl || isBusy}
+      />
     </SafeAreaView>
   );
 }
@@ -363,146 +515,27 @@ const styles = StyleSheet.create({
   },
   container: {
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xl,
+    paddingTop: spacing.sm,
   },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.sm + 4,
+  sectionHeader: {
+    marginTop: spacing.lg,
+    marginBottom: 10,
   },
-  icon: {
-    fontSize: fontSizes.md,
-    color: colors.textPrimary,
-  },
-  title: {
-    fontSize: fontSizes.lg,
-    fontWeight: '700',
-    color: colors.textPrimary,
-  },
-  previewCard: {
-    height: 420,
-    backgroundColor: colors.cardBackground,
-    borderRadius: radii.lg,
-    overflow: 'hidden',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: spacing.md,
-    marginBottom: spacing.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  previewImage: {
-    width: '100%',
-    height: '100%',
-  },
-  previewEmpty: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: spacing.md,
-  },
-  previewEmptyText: {
-    color: colors.textPrimary,
-    fontWeight: '600',
-    fontSize: fontSizes.base,
-  },
-  previewEmptySub: {
+  sectionEyebrow: {
+    fontSize: 10.5,
+    lineHeight: 14,
+    letterSpacing: 1.15,
+    textTransform: 'uppercase',
     color: colors.textMuted,
-    marginTop: 6,
-    fontSize: fontSizes.sm,
-  },
-  previewBadge: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-  },
-  previewBadgeText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-    letterSpacing: 0.2,
+    fontWeight: '700',
+    fontFamily: typography.fontFamily,
   },
   sectionTitle: {
-    fontSize: fontSizes.base,
-    fontWeight: '600',
-    color: colors.textPrimary,
-    marginBottom: spacing.sm,
-  },
-  emptyRow: {
-    backgroundColor: colors.cardBackground,
-    borderRadius: radii.md,
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: spacing.md,
-  },
-  emptyRowText: {
-    color: colors.textSecondary,
-    marginBottom: 4,
-  },
-  emptyRowHint: {
-    color: colors.textMuted,
-    fontSize: fontSizes.sm,
-  },
-  itemChip: {
-    width: 110,
-    backgroundColor: colors.cardBackground,
-    borderRadius: radii.md,
-    padding: spacing.sm,
-    marginRight: spacing.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  itemThumb: {
-    width: '100%',
-    height: 80,
-    borderRadius: radii.sm,
-    backgroundColor: '#e6e6e6',
-    marginBottom: 6,
-  },
-  itemName: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.sm,
-  },
-  remove: {
-    color: colors.textMuted,
-    fontSize: 12,
-    marginTop: 6,
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  btn: {
-    flex: 1,
-    backgroundColor: colors.accent,
-    paddingVertical: spacing.md,
-    borderRadius: radii.md,
-    alignItems: 'center',
-  },
-  btnText: {
-    color: colors.textOnAccent,
-    fontWeight: '700',
-  },
-  btnSecondary: {
-    flex: 1,
-    backgroundColor: colors.accentSecondary,
-    paddingVertical: spacing.md,
-    borderRadius: radii.md,
-    alignItems: 'center',
-  },
-  btnSecondaryText: {
+    marginTop: 4,
+    fontSize: 22,
+    lineHeight: 28,
     color: colors.textPrimary,
     fontWeight: '700',
-  },
-  btnDisabled: {
-    opacity: 0.55,
+    fontFamily: 'Georgia',
   },
 });

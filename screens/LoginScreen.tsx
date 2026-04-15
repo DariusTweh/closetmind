@@ -1,33 +1,59 @@
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity,
-  StyleSheet, Alert, SafeAreaView, ActivityIndicator, KeyboardAvoidingView, Platform
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import AuthScreenShell from '../components/Auth/AuthScreenShell';
+import AuthTextField from '../components/Auth/AuthTextField';
 import { supabase } from '../lib/supabase';
-import { colors } from '../lib/theme';
-
+import { colors, spacing, typography } from '../lib/theme';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [checkingSession, setCheckingSession] = useState(true); // ⬅️ For initial session check
-  const navigation = useNavigation();
+  const [checkingSession, setCheckingSession] = useState(true);
+  const navigation = useNavigation<any>();
 
-  // Initial session check
   useEffect(() => {
+    let mounted = true;
+
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (data?.session?.user) {
-        navigation.reset({ index: 0, routes: [{ name: 'MainTabs' as never }] as never });
-      } else {
-        setCheckingSession(false);
+      try {
+        const { data, error } = await supabase.auth.getSession();
+
+        if (!mounted) return;
+
+        if (error) {
+          console.error('getSession error:', error.message);
+          setCheckingSession(false);
+          return;
+        }
+
+        if (data?.session?.user) {
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'MainTabs' as never }] as never,
+          });
+        } else {
+          setCheckingSession(false);
+        }
+      } catch (err: any) {
+        console.error('Initial session check failed:', err?.message || err);
+        if (mounted) setCheckingSession(false);
       }
     })();
-  }, []);
 
-  // Only trigger navigation on SIGNED_IN (no need to duplicate logic)
+    return () => {
+      mounted = false;
+    };
+  }, [navigation]);
+
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
@@ -49,7 +75,7 @@ export default function LoginScreen() {
     setLoading(true);
 
     try {
-      await supabase.auth.signOut(); // Clear lingering sessions
+      await supabase.auth.signOut();
 
       const { error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
@@ -61,13 +87,13 @@ export default function LoginScreen() {
           /invalid login/i.test(error.message)
             ? 'Invalid email or password.'
             : /email not confirmed/i.test(error.message)
-            ? 'Please confirm your email before logging in.'
-            : error.message;
+              ? 'Please confirm your email before logging in.'
+              : error.message;
 
         Alert.alert('Login failed', msg);
       }
-    } catch (err) {
-      Alert.alert('Error', err.message);
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Unable to log in.');
     } finally {
       setLoading(false);
     }
@@ -80,7 +106,7 @@ export default function LoginScreen() {
     }
 
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: 'yourapp://reset-password', // 🔧 Replace with actual deep link
+      redirectTo: 'yourapp://reset-password',
     });
 
     if (error) {
@@ -92,96 +118,114 @@ export default function LoginScreen() {
 
   if (checkingSession) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#000" />
+      <View style={styles.loadingScreen}>
+        <ActivityIndicator size="large" color={colors.textPrimary} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={styles.container}>
-          <Text style={styles.title}>Welcome to ClosetMind</Text>
+    <AuthScreenShell
+      eyebrow="ClosetMind"
+      title="Sign in to your closet."
+      subtitle="Track what you own, generate sharper looks, and keep verdicts tied to one personal wardrobe."
+      footer={
+        <TouchableOpacity
+          activeOpacity={0.82}
+          onPress={() => navigation.navigate('Signup' as never)}
+        >
+          <Text style={styles.footerCopy}>
+            Don&apos;t have an account? <Text style={styles.footerLink}>Create one</Text>
+          </Text>
+        </TouchableOpacity>
+      }
+    >
+      <AuthTextField
+        label="Email"
+        placeholder="name@email.com"
+        autoCapitalize="none"
+        autoComplete="email"
+        keyboardType="email-address"
+        textContentType="username"
+        value={email}
+        onChangeText={setEmail}
+        editable={!loading}
+      />
 
-          <TextInput
-            style={styles.input}
-            placeholder="Email"
-            placeholderTextColor="#999"
-            autoCapitalize="none"
-            autoComplete="email"
-            keyboardType="email-address"
-            textContentType="username"
-            value={email}
-            onChangeText={setEmail}
-            editable={!loading}
-          />
+      <AuthTextField
+        label="Password"
+        placeholder="Enter your password"
+        secureTextEntry
+        autoComplete="password"
+        textContentType="password"
+        value={password}
+        onChangeText={setPassword}
+        editable={!loading}
+      />
 
-          <TextInput
-            style={styles.input}
-            placeholder="Password"
-            placeholderTextColor="#999"
-            secureTextEntry
-            autoComplete="password"
-            textContentType="password"
-            value={password}
-            onChangeText={setPassword}
-            editable={!loading}
-          />
+      <TouchableOpacity
+        activeOpacity={0.84}
+        style={[styles.primaryButton, loading && styles.disabledButton]}
+        onPress={handleLogin}
+        disabled={loading}
+      >
+        {loading ? (
+          <ActivityIndicator color={colors.textOnAccent} />
+        ) : (
+          <Text style={styles.primaryButtonText}>Sign In</Text>
+        )}
+      </TouchableOpacity>
 
-          <TouchableOpacity style={[styles.button, loading && { opacity: 0.7 }]} onPress={handleLogin} disabled={loading}>
-            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Login</Text>}
-          </TouchableOpacity>
-
-          <TouchableOpacity onPress={handleForgotPassword} style={{ marginTop: 12 }}>
-            <Text style={styles.link}>Forgot password?</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity onPress={() => navigation.navigate('Signup' as never)} style={{ marginTop: 16 }}>
-            <Text style={styles.signupText}>Don't have an account? <Text style={styles.link}>Sign up</Text></Text>
-          </TouchableOpacity>
-        </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+      <TouchableOpacity activeOpacity={0.82} onPress={handleForgotPassword} style={styles.secondaryAction}>
+        <Text style={styles.secondaryActionText}>Forgot password?</Text>
+      </TouchableOpacity>
+    </AuthScreenShell>
   );
 }
+
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#fff' },
-  container: {
-    paddingTop: 80,
-    paddingHorizontal: 30,
+  loadingScreen: {
     flex: 1,
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: '700',
-    marginBottom: 40,
-    color: '#111',
-    textAlign: 'center',
-  },
-  input: {
-    backgroundColor: '#f1f5f9',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 20,
-    fontSize: 16,
-    color: '#000',
-  },
-  button: {
-    backgroundColor: '#000',
-    padding: 16,
-    borderRadius: 12,
+    backgroundColor: colors.background,
     alignItems: 'center',
-    marginBottom: 20,
+    justifyContent: 'center',
   },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
+  primaryButton: {
+    minHeight: 54,
+    borderRadius: 16,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.sm,
+  },
+  primaryButtonText: {
+    color: colors.textOnAccent,
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: '700',
+    fontFamily: typography.fontFamily,
+  },
+  disabledButton: {
+    opacity: 0.6,
+  },
+  secondaryAction: {
+    marginTop: spacing.md,
+    alignItems: 'center',
+  },
+  secondaryActionText: {
+    color: colors.textSecondary,
+    fontSize: 13.5,
     fontWeight: '600',
+    fontFamily: typography.fontFamily,
   },
-  signupText: {
-    color: '#555',
+  footerCopy: {
     textAlign: 'center',
-    marginTop: 12,
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontFamily: typography.fontFamily,
+  },
+  footerLink: {
+    color: colors.textPrimary,
+    fontWeight: '700',
   },
 });

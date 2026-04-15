@@ -1,50 +1,34 @@
 import React from 'react';
-import { View, TextInput, StyleSheet, TouchableOpacity, Text, ScrollView } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, radii, shadows, typography } from '../../lib/theme'; 
-const FILTERS = ['All', 'Favorites', 'Spring', 'Summer', 'Fall', 'Winter'];
+import { View, StyleSheet, Text, ScrollView } from 'react-native';
+import { spacing, typography } from '../../lib/theme';
+import FilterChip from './FilterChip';
+import SearchField from './SearchField';
 
-const seasonColors = {
-  Spring: '#b5d6a7',
-  Summer: '#f4a261',
-  Fall: '#eab308',
-  Winter: '#60a5fa',
-};
+const FILTERS = ['All', 'Favorites', 'Spring', 'Summer', 'Fall', 'Winter'];
 
 export default function HeaderControls({ searchQuery, setSearchQuery, activeFilter, setActiveFilter }) {
   return (
     <View style={styles.container}>
+      <Text style={styles.eyebrow}>Curated archive</Text>
       <Text style={styles.title}>Saved Outfits</Text>
+      <Text style={styles.subtitle}>Revisit the looks you’ve already styled and kept.</Text>
 
-      <View style={styles.searchBox}>
-        <Ionicons name="search" size={18} color="#999" style={styles.searchIcon} />
-        <TextInput
-          placeholder="Search"
-          placeholderTextColor="#999"
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          style={styles.input}
-        />
-      </View>
+      <SearchField value={searchQuery} onChangeText={setSearchQuery} />
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.pillRow}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.filterScroll}
+        contentContainerStyle={styles.filterRow}
+      >
         {FILTERS.map(filter => {
-          const isActive = activeFilter === filter;
-          const pillStyle = {
-            backgroundColor: isActive
-              ? seasonColors[filter] || '#8abfa3'
-              : '#eee',
-          };
-          const textStyle = isActive ? styles.activePillText : styles.pillText;
-
           return (
-            <TouchableOpacity
+            <FilterChip
               key={filter}
+              label={filter}
+              active={activeFilter === filter}
               onPress={() => setActiveFilter(filter)}
-              style={[styles.pill, pillStyle]}
-            >
-              <Text style={textStyle}>{filter}</Text>
-            </TouchableOpacity>
+            />
           );
         })}
       </ScrollView>
@@ -54,53 +38,38 @@ export default function HeaderControls({ searchQuery, setSearchQuery, activeFilt
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: 0,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.lg,
-    backgroundColor: colors.background,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.md,
+  },
+  eyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.6,
+    textTransform: 'uppercase',
+    color: 'rgba(28, 28, 28, 0.52)',
+    marginBottom: 8,
+    fontFamily: typography.fontFamily,
   },
   title: {
-    fontSize: 24,
+    fontSize: 38,
+    lineHeight: 42,
     fontWeight: '700',
-    fontFamily: 'Georgia', // editorial style
-    color: colors.textPrimary,
+    fontFamily: 'Georgia',
+    color: '#1c1c1c',
+  },
+  subtitle: {
+    marginTop: 8,
     marginBottom: spacing.lg,
-  },
-  searchBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.backgroundAlt,
-    borderRadius: radii.pill,
-    paddingHorizontal: spacing.md - 2,
-    paddingVertical: spacing.sm + 2,
-    marginBottom: spacing.md - 2,
-  },
-  searchIcon: {
-    marginRight: spacing.xs,
-  },
-  input: {
-    flex: 1,
-    fontSize: 15,
-    color: colors.textPrimary,
-    fontFamily: typography.fontFamily,
-  },
-  pillRow: {
-    flexDirection: 'row',
-  },
-  pill: {
-    paddingVertical: spacing.xs + 2,
-    paddingHorizontal: spacing.md - 2,
-    borderRadius: radii.pill,
-    marginRight: spacing.sm + 2,
-  },
-  pillText: {
-    color: colors.textSecondary,
+    maxWidth: 320,
     fontSize: 14,
+    lineHeight: 20,
+    color: 'rgba(28, 28, 28, 0.72)',
     fontFamily: typography.fontFamily,
   },
-  activePillText: {
-    color: colors.textOnAccent,
-    fontWeight: '600',
-    fontFamily: typography.fontFamily,
+  filterScroll: {
+    marginTop: spacing.md,
+  },
+  filterRow: {
+    paddingRight: spacing.md,
   },
 });
