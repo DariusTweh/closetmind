@@ -2,7 +2,6 @@ import React from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
-  SafeAreaView,
   ScrollView,
   StyleProp,
   StyleSheet,
@@ -10,6 +9,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing, typography } from '../../lib/theme';
 
 type AuthScreenShellProps = {
@@ -23,7 +23,7 @@ type AuthScreenShellProps = {
 };
 
 export default function AuthScreenShell({
-  eyebrow = 'ClosetMind',
+  eyebrow = 'Klozu',
   title,
   subtitle,
   children,

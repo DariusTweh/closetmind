@@ -9,7 +9,18 @@ type StatItem = {
   onPress?: () => void;
 };
 
+function formatStatValue(value: number | string) {
+  if (typeof value !== 'number') return value;
+  if (value >= 1000) {
+    const compact = value / 1000;
+    const rounded = compact >= 10 ? Math.round(compact) : Math.round(compact * 10) / 10;
+    return `${rounded}K`;
+  }
+  return String(value);
+}
+
 export default function ProfileStatGrid({ items }: { items: StatItem[] }) {
+  const isCompact = items.length >= 4;
   return (
     <View style={styles.container}>
       {items.map((item, index) => {
@@ -17,12 +28,28 @@ export default function ProfileStatGrid({ items }: { items: StatItem[] }) {
         return (
           <Cell
             key={item.key}
-            style={[styles.cell, index < items.length - 1 && styles.cellBorder]}
+            style={[
+              styles.cell,
+              isCompact && styles.cellCompact,
+              index < items.length - 1 && styles.cellBorder,
+            ]}
             onPress={item.onPress}
             activeOpacity={0.84}
           >
-            <Text style={styles.value}>{item.value}</Text>
-            <Text style={styles.label}>{item.label}</Text>
+            <Text
+              style={[styles.value, isCompact && styles.valueCompact]}
+              numberOfLines={1}
+              allowFontScaling={false}
+            >
+              {formatStatValue(item.value)}
+            </Text>
+            <Text
+              style={[styles.label, isCompact && styles.labelCompact]}
+              numberOfLines={1}
+              allowFontScaling={false}
+            >
+              {item.label}
+            </Text>
           </Cell>
         );
       })}
@@ -47,6 +74,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 14,
   },
+  cellCompact: {
+    paddingHorizontal: 8,
+  },
   cellBorder: {
     borderRightWidth: 1,
     borderRightColor: '#e5ddd3',
@@ -57,6 +87,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1c1c1c',
     fontFamily: 'Georgia',
+    textAlign: 'center',
+    width: '100%',
+  },
+  valueCompact: {
+    fontSize: 24,
+    lineHeight: 28,
   },
   label: {
     marginTop: 6,
@@ -66,5 +102,12 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: '#7e7267',
     fontFamily: typography.fontFamily,
+    textAlign: 'center',
+    width: '100%',
+  },
+  labelCompact: {
+    fontSize: 10,
+    lineHeight: 12,
+    letterSpacing: 0.8,
   },
 });

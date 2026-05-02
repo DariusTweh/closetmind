@@ -43,8 +43,14 @@ export default function OutfitDetailHeader({
       </View>
 
       <Text style={styles.eyebrow}>Saved look</Text>
-      <Text style={styles.title}>{title}</Text>
-      {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+      <Text style={styles.title} numberOfLines={2}>
+        {title}
+      </Text>
+      {subtitle ? (
+        <Text style={styles.subtitle} numberOfLines={3}>
+          {subtitle}
+        </Text>
+      ) : null}
 
       <View style={styles.metaRow}>
         <Text style={styles.metaText}>{itemCount} {itemCount === 1 ? 'piece' : 'pieces'}</Text>
@@ -60,8 +66,8 @@ export default function OutfitDetailHeader({
 const styles = StyleSheet.create({
   container: {
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.lg,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: '#daddd8',
   },
@@ -69,11 +75,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
   },
   iconButton: {
-    width: 40,
-    height: 40,
+    width: 38,
+    height: 38,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#daddd8',
@@ -90,17 +96,17 @@ const styles = StyleSheet.create({
     fontFamily: typography.fontFamily,
   },
   title: {
-    marginTop: 8,
-    fontSize: 38,
-    lineHeight: 42,
+    marginTop: 6,
+    fontSize: 31,
+    lineHeight: 34,
     fontWeight: '700',
     color: '#1c1c1c',
     fontFamily: 'Georgia',
   },
   subtitle: {
-    marginTop: 10,
-    fontSize: 15,
-    lineHeight: 21,
+    marginTop: 8,
+    fontSize: 14,
+    lineHeight: 19,
     color: 'rgba(28, 28, 28, 0.72)',
     fontFamily: typography.fontFamily,
   },
@@ -108,7 +114,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
-    marginTop: 14,
+    marginTop: 10,
   },
   metaText: {
     fontSize: 11.5,

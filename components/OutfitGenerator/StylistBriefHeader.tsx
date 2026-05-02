@@ -13,7 +13,7 @@ export default function StylistBriefHeader({
 }: StylistBriefHeaderProps) {
   return (
     <View style={styles.container}>
-      <Text style={styles.eyebrow}>ClosetMind Stylist</Text>
+      <Text style={styles.eyebrow}>Klozu Stylist</Text>
       <Text style={styles.title}>{title}</Text>
       <Text style={styles.subtitle}>{subtitle}</Text>
     </View>

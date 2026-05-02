@@ -1,17 +1,27 @@
 import React from 'react';
-import { View, StyleSheet, Text, ScrollView } from 'react-native';
-import { spacing, typography } from '../../lib/theme';
+import { View, StyleSheet, ScrollView } from 'react-native';
+import { spacing } from '../../lib/theme';
 import FilterChip from './FilterChip';
 import SearchField from './SearchField';
 
 const FILTERS = ['All', 'Favorites', 'Spring', 'Summer', 'Fall', 'Winter'];
 
-export default function HeaderControls({ searchQuery, setSearchQuery, activeFilter, setActiveFilter }) {
+export default function HeaderControls({
+  searchQuery,
+  setSearchQuery,
+  activeFilter,
+  setActiveFilter,
+  children,
+}: {
+  searchQuery: string;
+  setSearchQuery: (value: string) => void;
+  activeFilter: string;
+  setActiveFilter: (value: any) => void;
+  children?: React.ReactNode;
+}) {
   return (
     <View style={styles.container}>
-      <Text style={styles.eyebrow}>Curated archive</Text>
-      <Text style={styles.title}>Saved Outfits</Text>
-      <Text style={styles.subtitle}>Revisit the looks you’ve already styled and kept.</Text>
+      {children ? <View style={styles.extraContent}>{children}</View> : null}
 
       <SearchField value={searchQuery} onChangeText={setSearchQuery} />
 
@@ -38,36 +48,14 @@ export default function HeaderControls({ searchQuery, setSearchQuery, activeFilt
 
 const styles = StyleSheet.create({
   container: {
-    paddingTop: spacing.md,
-    paddingBottom: spacing.md,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.sm,
   },
-  eyebrow: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
-    color: 'rgba(28, 28, 28, 0.52)',
-    marginBottom: 8,
-    fontFamily: typography.fontFamily,
-  },
-  title: {
-    fontSize: 38,
-    lineHeight: 42,
-    fontWeight: '700',
-    fontFamily: 'Georgia',
-    color: '#1c1c1c',
-  },
-  subtitle: {
-    marginTop: 8,
-    marginBottom: spacing.lg,
-    maxWidth: 320,
-    fontSize: 14,
-    lineHeight: 20,
-    color: 'rgba(28, 28, 28, 0.72)',
-    fontFamily: typography.fontFamily,
+  extraContent: {
+    marginBottom: spacing.xs,
   },
   filterScroll: {
-    marginTop: spacing.md,
+    marginTop: spacing.sm,
   },
   filterRow: {
     paddingRight: spacing.md,

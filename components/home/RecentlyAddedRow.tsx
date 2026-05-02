@@ -7,7 +7,9 @@ type WardrobeItem = {
   name?: string;
   type?: string;
   image_url: string;
-  image_path?: string;
+  image_path?: string | null;
+  cutout_url?: string | null;
+  cutout_image_url?: string | null;
   created_at?: string;
 };
 

@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { spacing, typography } from '../../lib/theme';
+import { colors, spacing, typography } from '../../lib/theme';
 
 type GeneratorSummaryCardProps = {
   vibe: string;
@@ -9,17 +9,12 @@ type GeneratorSummaryCardProps = {
   temperature: string;
 };
 
-function SummaryMeta({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function SummaryPill({ value }: { value: string }) {
   return (
-    <View style={styles.metaCell}>
-      <Text style={styles.metaLabel}>{label}</Text>
-      <Text style={styles.metaValue} numberOfLines={2}>{value}</Text>
+    <View style={styles.pill}>
+      <Text style={styles.pillText} numberOfLines={1}>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -37,14 +32,13 @@ export default function GeneratorSummaryCard({
   return (
     <View style={styles.card}>
       <Text style={styles.eyebrow}>Styled for you</Text>
-      <Text style={styles.title}>{summaryLine}</Text>
-      <View style={styles.grid}>
-        <SummaryMeta label="Vibe" value={vibe || 'Open brief'} />
-        <SummaryMeta label="Context" value={context || 'Any plan'} />
-      </View>
-      <View style={[styles.grid, styles.gridTopBorder]}>
-        <SummaryMeta label="Season" value={season || 'All'} />
-        <SummaryMeta label="Temperature" value={temperature ? `${temperature} deg F` : 'Flexible'} />
+      <Text style={styles.title} numberOfLines={1}>
+        {summaryLine}
+      </Text>
+      <View style={styles.pillRow}>
+        <SummaryPill value={context || 'Any plan'} />
+        <SummaryPill value={season || 'All season'} />
+        <SummaryPill value={temperature ? `${temperature}°F` : 'Flexible'} />
       </View>
     </View>
   );
@@ -53,55 +47,48 @@ export default function GeneratorSummaryCard({
 const styles = StyleSheet.create({
   card: {
     borderRadius: 18,
-    backgroundColor: '#fafaff',
+    backgroundColor: colors.cardBackground,
     borderWidth: 1,
-    borderColor: '#daddd8',
+    borderColor: colors.border,
     paddingHorizontal: spacing.lg,
-    paddingVertical: 18,
+    paddingTop: 14,
+    paddingBottom: 12,
   },
   eyebrow: {
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1.2,
-    color: '#897d71',
+    color: colors.textMuted,
     textTransform: 'uppercase',
     fontFamily: typography.fontFamily,
   },
   title: {
     marginTop: 6,
-    marginBottom: 12,
-    fontSize: 22,
-    lineHeight: 28,
+    marginBottom: 10,
+    fontSize: 18,
+    lineHeight: 23,
     fontWeight: '700',
-    color: '#1c1c1c',
+    color: colors.textPrimary,
     fontFamily: typography.fontFamily,
   },
-  grid: {
+  pillRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
-  gridTopBorder: {
-    borderTopWidth: 1,
-    borderTopColor: '#e2dbd1',
+  pill: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceContainerLowest,
   },
-  metaCell: {
-    flex: 1,
-    paddingVertical: 10,
-  },
-  metaLabel: {
-    fontSize: 10.5,
+  pillText: {
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 1.1,
-    color: 'rgba(28, 28, 28, 0.52)',
-    textTransform: 'uppercase',
-    fontFamily: typography.fontFamily,
-  },
-  metaValue: {
-    marginTop: 5,
-    paddingRight: 12,
-    fontSize: 13.5,
-    lineHeight: 18,
-    color: '#2a241f',
-    fontWeight: '600',
+    letterSpacing: 0.6,
+    color: colors.textSecondary,
     fontFamily: typography.fontFamily,
   },
 });

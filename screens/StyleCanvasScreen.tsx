@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,10 +12,19 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRoute } from '@react-navigation/native';
+import ViewShot from 'react-native-view-shot';
+import SaveGeneratedOutfitModal from '../components/OutfitGenerator/SaveGeneratedOutfitModal';
+import CreateTravelCollectionModal from '../components/SavedOutfits/CreateTravelCollectionModal';
+import UpgradeLimitModal from '../components/subscriptions/UpgradeLimitModal';
 import StyleCanvasAddItemsSheet from '../components/style-canvas/StyleCanvasAddItemsSheet';
 import StyleCanvasBoardItem from '../components/style-canvas/StyleCanvasBoardItem';
+import { useUpgradeWall } from '../hooks/useUpgradeWall';
 import { apiPost } from '../lib/api';
+import { isSubscriptionLimitError } from '../lib/subscriptions/errors';
+import { buildUpgradeModalState, HIDDEN_UPGRADE_MODAL_STATE } from '../lib/subscriptions/modalState';
+import { canUseFeature } from '../lib/subscriptions/usageService';
 import { setActiveStyleCanvasSession } from '../lib/styleCanvasSession';
+import { supabase } from '../lib/supabase';
 import { colors, shadows, spacing, typography } from '../lib/theme';
 import { fetchRecentExternalBrowserItems } from '../services/externalItemsService';
 import {
@@ -23,8 +32,11 @@ import {
   loadStyleCanvas,
   saveCanvasAsOutfit,
   saveStyleCanvas,
+  uploadStyleCanvasPreviewImage,
 } from '../services/styleCanvasService';
+import { createTravelCollection, fetchTravelCollections } from '../services/travelCollectionsService';
 import type { BrowserItem, CanvasItem, WardrobeCanvasSourceItem } from '../types/styleCanvas';
+import type { TravelCollectionDraft } from '../types/travelCollections';
 import {
   browserItemsToCanvasItems,
   canvasItemsToBrowserItems,
@@ -35,11 +47,14 @@ import {
   wardrobeItemsToCanvasItems,
 } from '../utils/styleCanvasAdapters';
 
+type AddSource = 'closet' | 'browser' | 'url';
+
 type StyleCanvasRouteParams = {
   canvasId?: string;
   initialItems?: CanvasItem[];
   appendItems?: CanvasItem[];
   availableBrowserItems?: BrowserItem[];
+  allowedSources?: AddSource[];
   origin?: string;
   initialTitle?: string;
 };
@@ -48,6 +63,9 @@ const DEFAULT_CANVAS_TITLE = 'Style Canvas';
 const EDITORIAL_CANVAS_BACKGROUND = '#f3f5f8';
 const LEGACY_WARM_CANVAS_BACKGROUNDS = new Set(['#f7f1e7', '#f7f1e7ff', 'rgb(247,241,231)']);
 const DEFAULT_BACKGROUND = EDITORIAL_CANVAS_BACKGROUND;
+const CANVAS_PREVIEW_STAGE_WIDTH = 345;
+const CANVAS_PREVIEW_STAGE_HEIGHT = 420;
+const DEFAULT_ADD_SOURCES: AddSource[] = ['closet', 'browser', 'url'];
 
 function mergeBrowserItemLists(current: BrowserItem[], incoming: BrowserItem[]) {
   const merged = new Map<string, BrowserItem>();
@@ -88,6 +106,12 @@ export default function StyleCanvasScreen({ navigation }: any) {
   const { params } = useRoute<any>() as { params?: StyleCanvasRouteParams };
   const routeCanvasId = params?.canvasId;
   const routeAppendItems = params?.appendItems || [];
+  const allowedSources = useMemo<AddSource[]>(() => {
+    const rawSources = Array.isArray(params?.allowedSources) ? params?.allowedSources : DEFAULT_ADD_SOURCES;
+    const normalized = rawSources.filter((source): source is AddSource => DEFAULT_ADD_SOURCES.includes(source));
+    return normalized.length ? normalized : ['closet'];
+  }, [params?.allowedSources]);
+  const isClosetOnlyCanvas = allowedSources.length === 1 && allowedSources[0] === 'closet';
 
   const [canvasId, setCanvasId] = useState<string | null>(routeCanvasId || null);
   const [title, setTitle] = useState(params?.initialTitle || DEFAULT_CANVAS_TITLE);
@@ -100,9 +124,20 @@ export default function StyleCanvasScreen({ navigation }: any) {
   const [closingCanvas, setClosingCanvas] = useState(false);
   const [savingOutfit, setSavingOutfit] = useState(false);
   const [preparingTryOn, setPreparingTryOn] = useState(false);
+  const [travelCollections, setTravelCollections] = useState<any[]>([]);
+  const [travelCollectionsLoading, setTravelCollectionsLoading] = useState(false);
+  const [travelCollectionModalVisible, setTravelCollectionModalVisible] = useState(false);
+  const [creatingTravelCollection, setCreatingTravelCollection] = useState(false);
+  const [saveSheetVisible, setSaveSheetVisible] = useState(false);
+  const [saveSheetMode, setSaveSheetMode] = useState<'regular' | 'travel'>('regular');
+  const [saveSheetName, setSaveSheetName] = useState('Canvas Look');
+  const [saveSheetTravelCollectionId, setSaveSheetTravelCollectionId] = useState('');
+  const [saveSheetActivityLabel, setSaveSheetActivityLabel] = useState('');
+  const [saveSheetDayLabel, setSaveSheetDayLabel] = useState('');
+  const [upgradeModal, setUpgradeModal] = useState(HIDDEN_UPGRADE_MODAL_STATE);
 
   const [addSheetVisible, setAddSheetVisible] = useState(false);
-  const [addSource, setAddSource] = useState<'closet' | 'browser' | 'url'>('closet');
+  const [addSource, setAddSource] = useState<AddSource>(allowedSources[0] || 'closet');
   const [closetItems, setClosetItems] = useState<WardrobeCanvasSourceItem[]>([]);
   const [loadingClosetItems, setLoadingClosetItems] = useState(false);
   const [browserItems, setBrowserItems] = useState<BrowserItem[]>(params?.availableBrowserItems || []);
@@ -112,13 +147,41 @@ export default function StyleCanvasScreen({ navigation }: any) {
   const [pasteUrl, setPasteUrl] = useState('');
   const [importingUrl, setImportingUrl] = useState(false);
   const [stageLayout, setStageLayout] = useState({ width: 0, height: 0 });
+  const [loadedPreviewItemIds, setLoadedPreviewItemIds] = useState<string[]>([]);
   const [canvasContext, setCanvasContext] = useState('');
   const [canvasSeason, setCanvasSeason] = useState<string | null>(null);
+  const previewCaptureRef = useRef<any>(null);
+  const loadedPreviewItemIdsRef = useRef<string[]>([]);
+  const { isPaywallAvailable, openTryOnPack, openUpgrade } = useUpgradeWall();
 
   const selectedItem = useMemo(
     () => items.find((item) => item.id === selectedItemId) || null,
     [items, selectedItemId],
   );
+  const previewLoadTargetCount = useMemo(
+    () => (items || []).filter((item) => Boolean(item?.image_url || item?.cutout_url)).length,
+    [items],
+  );
+  const previewLoadResetKey = useMemo(
+    () =>
+      (items || [])
+        .map((item) => `${item.id}:${item.cutout_url || item.image_url || ''}`)
+        .join('|'),
+    [items],
+  );
+  const selectedTravelCollection = useMemo(
+    () =>
+      travelCollections.find((collection) => String(collection?.id || '') === String(saveSheetTravelCollectionId || '')) ||
+      null,
+    [saveSheetTravelCollectionId, travelCollections],
+  );
+  const orderedItems = useMemo(() => reindexCanvasItems(items), [items]);
+  const selectedLayerIndex = useMemo(
+    () => orderedItems.findIndex((item) => item.id === selectedItemId),
+    [orderedItems, selectedItemId],
+  );
+  const canMoveSelectedBack = selectedLayerIndex > 0;
+  const canMoveSelectedFront = selectedLayerIndex !== -1 && selectedLayerIndex < orderedItems.length - 1;
 
   const selectedBrowserCount = useMemo(
     () => Object.keys(selectedBrowserIds).filter((key) => selectedBrowserIds[key]).length,
@@ -133,6 +196,20 @@ export default function StyleCanvasScreen({ navigation }: any) {
     if (!(params?.availableBrowserItems || []).length) return;
     setBrowserItems((current) => mergeBrowserItemLists(current, params?.availableBrowserItems || []));
   }, [params?.availableBrowserItems]);
+
+  useEffect(() => {
+    if (!allowedSources.includes(addSource)) {
+      setAddSource(allowedSources[0] || 'closet');
+    }
+  }, [addSource, allowedSources]);
+
+  useEffect(() => {
+    setLoadedPreviewItemIds([]);
+  }, [previewLoadResetKey]);
+
+  useEffect(() => {
+    loadedPreviewItemIdsRef.current = loadedPreviewItemIds;
+  }, [loadedPreviewItemIds]);
 
   useEffect(() => {
     let mounted = true;
@@ -237,6 +314,92 @@ export default function StyleCanvasScreen({ navigation }: any) {
     );
   }, []);
 
+  const loadTravelCollectionOptions = useCallback(async () => {
+    try {
+      setTravelCollectionsLoading(true);
+      const collections = await fetchTravelCollections();
+      setTravelCollections(collections);
+    } catch (error: any) {
+      console.error('Failed to load travel collections:', error?.message || error);
+      Alert.alert('Trip Load Failed', error?.message || 'Could not load your travel collections.');
+    } finally {
+      setTravelCollectionsLoading(false);
+    }
+  }, []);
+
+  const handleCreateTravelCollection = useCallback(async (draft: TravelCollectionDraft) => {
+    try {
+      setCreatingTravelCollection(true);
+      const { data } = await supabase.auth.getUser();
+      const uid = String(data?.user?.id || '').trim();
+      const organizationAccess = await canUseFeature(uid, 'premium_organization');
+      if (!organizationAccess.allowed) {
+        setUpgradeModal(buildUpgradeModalState('premium_organization', organizationAccess));
+        return;
+      }
+      const created = await createTravelCollection({ draft });
+      setTravelCollections((current) => [created, ...current]);
+      setSaveSheetMode('travel');
+      setSaveSheetTravelCollectionId(String(created.id));
+      setTravelCollectionModalVisible(false);
+    } catch (error: any) {
+      if (isSubscriptionLimitError(error)) {
+        setUpgradeModal(buildUpgradeModalState(error.featureName, error.accessResult));
+        return;
+      }
+      console.error('Create travel collection failed:', error?.message || error);
+      Alert.alert('Create Trip Failed', error?.message || 'Could not create this trip.');
+    } finally {
+      setCreatingTravelCollection(false);
+    }
+  }, []);
+
+  const handlePreviewItemLoadEnd = useCallback((itemId: string) => {
+    const normalizedId = String(itemId || '').trim();
+    if (!normalizedId) return;
+    setLoadedPreviewItemIds((current) =>
+      current.includes(normalizedId) ? current : [...current, normalizedId],
+    );
+  }, []);
+
+  const captureCanvasPreviewAsset = useCallback(async () => {
+    if (!items.length) {
+      return {
+        previewImageUrl: null,
+        previewImagePath: null,
+      };
+    }
+
+    setSelectedItemId(null);
+
+    const deadline = Date.now() + 3500;
+    while (
+      previewLoadTargetCount > 0 &&
+      loadedPreviewItemIdsRef.current.length < previewLoadTargetCount &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 160));
+
+    const previewUri = await previewCaptureRef.current?.capture?.({
+      format: 'jpg',
+      quality: 0.94,
+      result: 'tmpfile',
+    });
+
+    const uploadedPreview = await uploadStyleCanvasPreviewImage({
+      uri: String(previewUri || '').trim(),
+      canvasId,
+    });
+
+    return {
+      previewImageUrl: uploadedPreview.url,
+      previewImagePath: uploadedPreview.path,
+    };
+  }, [canvasId, items.length, previewLoadTargetCount]);
+
   const persistCanvas = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     if (!items.length) {
       if (!silent) {
@@ -247,11 +410,13 @@ export default function StyleCanvasScreen({ navigation }: any) {
 
     setSavingCanvas(true);
     try {
+      const previewAsset = await captureCanvasPreviewAsset();
       const savedCanvas = await saveStyleCanvas({
         canvasId,
         title,
         origin,
-        previewImageUrl: selectedItem?.cutout_url || selectedItem?.image_url || items[0]?.cutout_url || items[0]?.image_url || null,
+        previewImageUrl: previewAsset.previewImageUrl,
+        previewImagePath: previewAsset.previewImagePath,
         backgroundColor,
         metadata: {
           item_count: items.length,
@@ -284,13 +449,28 @@ export default function StyleCanvasScreen({ navigation }: any) {
     } finally {
       setSavingCanvas(false);
     }
-  }, [backgroundColor, browserItems.length, canvasContext, canvasId, canvasSeason, items, origin, selectedItem, title]);
+  }, [
+    backgroundColor,
+    browserItems.length,
+    canvasContext,
+    canvasId,
+    canvasSeason,
+    captureCanvasPreviewAsset,
+    items,
+    origin,
+    title,
+  ]);
 
   const handleSaveCanvas = useCallback(async () => {
     await persistCanvas({ silent: false });
   }, [persistCanvas]);
 
-  const handleSaveAsOutfit = useCallback(async () => {
+  const closeSaveSheet = useCallback(() => {
+    if (savingOutfit) return;
+    setSaveSheetVisible(false);
+  }, [savingOutfit]);
+
+  const handleOpenSaveAsOutfit = useCallback(() => {
     if (!items.length || savingOutfit) {
       if (!items.length) {
         Alert.alert('No items yet', 'Add at least one piece before saving this canvas as an outfit.');
@@ -298,30 +478,104 @@ export default function StyleCanvasScreen({ navigation }: any) {
       return;
     }
 
+    setSaveSheetMode('regular');
+    setSaveSheetName(String(title || DEFAULT_CANVAS_TITLE).trim() || 'Canvas Look');
+    setSaveSheetTravelCollectionId('');
+    setSaveSheetActivityLabel('');
+    setSaveSheetDayLabel('');
+    setSaveSheetVisible(true);
+  }, [items.length, savingOutfit, title]);
+
+  const handleConfirmSaveAsOutfit = useCallback(async () => {
+    if (!items.length || savingOutfit) {
+      if (!items.length) {
+        Alert.alert('No items yet', 'Add at least one piece before saving this canvas as an outfit.');
+      }
+      return;
+    }
+
+    if (saveSheetMode === 'travel' && !saveSheetTravelCollectionId) {
+      Alert.alert('Choose a Trip', 'Select a travel collection before saving this outfit.');
+      return;
+    }
+
     setSavingOutfit(true);
     try {
+      const { data } = await supabase.auth.getUser();
+      const uid = String(data?.user?.id || '').trim();
+      if (!uid) {
+        Alert.alert('Authentication Required', 'Please log in to save this outfit.');
+        return;
+      }
+
+      const saveAccess = await canUseFeature(uid, 'saved_outfit');
+      if (!saveAccess.allowed) {
+        setUpgradeModal(buildUpgradeModalState('saved_outfit', saveAccess));
+        return;
+      }
+
+      if (saveSheetMode === 'travel') {
+        const organizationAccess = await canUseFeature(uid, 'premium_organization');
+        if (!organizationAccess.allowed) {
+          setUpgradeModal(buildUpgradeModalState('premium_organization', organizationAccess));
+          return;
+        }
+      }
+
       const savedCanvas = await persistCanvas({ silent: true });
+      const resolvedName = String(saveSheetName || '').trim() || String(title || DEFAULT_CANVAS_TITLE).trim() || 'Canvas Look';
       const savedOutfit = await saveCanvasAsOutfit({
         canvasId: savedCanvas?.id || canvasId || null,
-        title: title || DEFAULT_CANVAS_TITLE,
+        title: resolvedName,
         context: canvasContext || null,
         season: canvasSeason || null,
         items: savedCanvas?.items || items,
+        travelCollectionId: saveSheetMode === 'travel' ? saveSheetTravelCollectionId : null,
+        activityLabel: saveSheetMode === 'travel' ? saveSheetActivityLabel : null,
+        dayLabel: saveSheetMode === 'travel' ? saveSheetDayLabel : null,
+        outfitMode: saveSheetMode,
       });
 
-      Alert.alert('Saved as outfit', 'This look is now in your saved outfits.', [
-        { text: 'Stay Here', style: 'cancel' },
-        {
-          text: 'Open Outfit',
-          onPress: () => navigation.navigate('OutfitDetail', { outfit: savedOutfit }),
-        },
-      ]);
+      closeSaveSheet();
+      Alert.alert(
+        'Saved as outfit',
+        saveSheetMode === 'travel' && selectedTravelCollection
+          ? `This look was saved to "${selectedTravelCollection.name}".`
+          : 'This look is now in your saved outfits.',
+        [
+          { text: 'Stay Here', style: 'cancel' },
+          {
+            text: 'Open Outfit',
+            onPress: () => navigation.navigate('OutfitDetail', { outfit: savedOutfit }),
+          },
+        ],
+      );
     } catch (error: any) {
+      if (isSubscriptionLimitError(error)) {
+        setUpgradeModal(buildUpgradeModalState(error.featureName, error.accessResult));
+        return;
+      }
       Alert.alert('Save outfit error', error?.message || 'Could not save this canvas as an outfit.');
     } finally {
       setSavingOutfit(false);
     }
-  }, [canvasContext, canvasId, canvasSeason, items, navigation, persistCanvas, savingOutfit, title]);
+  }, [
+    canvasContext,
+    canvasId,
+    canvasSeason,
+    closeSaveSheet,
+    items,
+    navigation,
+    persistCanvas,
+    saveSheetActivityLabel,
+    saveSheetDayLabel,
+    saveSheetMode,
+    saveSheetName,
+    saveSheetTravelCollectionId,
+    savingOutfit,
+    selectedTravelCollection,
+    title,
+  ]);
 
   const handleTryOnLook = useCallback(async () => {
     if (!items.length || preparingTryOn) {
@@ -383,6 +637,75 @@ export default function StyleCanvasScreen({ navigation }: any) {
       setClosingCanvas(false);
     }
   }, [closingCanvas, items.length, navigation, persistCanvas, savingCanvas]);
+
+  const saveSheetModal = (
+    <SaveGeneratedOutfitModal
+      visible={saveSheetVisible}
+      eyebrowText="Save canvas outfit"
+      titleText="Save Outfit"
+      subtitleText={
+        items.length
+          ? `${items.length} canvas ${items.length === 1 ? 'piece' : 'pieces'} ready to save.`
+          : 'Save this look to your archive or a trip.'
+      }
+      confirmLabel="Save Outfit"
+      name={saveSheetName}
+      saveMode={saveSheetMode}
+      travelCollections={travelCollections}
+      travelCollectionsLoading={travelCollectionsLoading}
+      selectedTravelCollectionId={saveSheetTravelCollectionId}
+      activityLabel={saveSheetActivityLabel}
+      dayLabel={saveSheetDayLabel}
+      generatedOutfit={items}
+      submitting={savingOutfit}
+      onClose={closeSaveSheet}
+      onConfirm={() => {
+        void handleConfirmSaveAsOutfit();
+      }}
+      onChangeName={setSaveSheetName}
+      onChangeSaveMode={(value) => {
+        if (value === 'travel') {
+          void supabase.auth.getUser()
+            .then(async ({ data }) => {
+              const uid = String(data?.user?.id || '').trim();
+              const result = await canUseFeature(uid, 'premium_organization');
+              if (!result.allowed) {
+                setUpgradeModal(buildUpgradeModalState('premium_organization', result));
+                return;
+              }
+              setSaveSheetMode(value);
+              void loadTravelCollectionOptions();
+            })
+            .catch((error: any) => {
+              console.warn('Premium organization gate failed:', error?.message || error);
+            });
+          return;
+        }
+        setSaveSheetMode(value);
+      }}
+      onChangeTravelCollectionId={setSaveSheetTravelCollectionId}
+      onChangeActivityLabel={setSaveSheetActivityLabel}
+      onChangeDayLabel={setSaveSheetDayLabel}
+      onPressCreateTrip={() => {
+        void loadTravelCollectionOptions();
+        setTravelCollectionModalVisible(true);
+      }}
+    />
+  );
+
+  const travelCollectionModal = (
+    <CreateTravelCollectionModal
+      visible={travelCollectionModalVisible}
+      submitting={creatingTravelCollection}
+      onClose={() => {
+        if (creatingTravelCollection) return;
+        setTravelCollectionModalVisible(false);
+      }}
+      onSubmit={(draft) => {
+        void handleCreateTravelCollection(draft);
+      }}
+    />
+  );
 
   const handleAddSelectedItems = useCallback(() => {
     if (addSource === 'closet') {
@@ -504,6 +827,79 @@ export default function StyleCanvasScreen({ navigation }: any) {
     setSelectedItemId(null);
   }, [selectedItemId]);
 
+  const clearAllItems = useCallback(() => {
+    if (!items.length || savingCanvas || closingCanvas) return;
+
+    Alert.alert(
+      'Clear canvas?',
+      'This removes every piece from the board, but does not delete the underlying closet or browser items.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            const previousItems = items;
+            setItems([]);
+            setSelectedItemId(null);
+
+            if (!canvasId) {
+              return;
+            }
+
+            setSavingCanvas(true);
+            try {
+              const savedCanvas = await saveStyleCanvas({
+                canvasId,
+                title,
+                origin,
+                previewImageUrl: null,
+                previewImagePath: null,
+                backgroundColor,
+                metadata: {
+                  item_count: 0,
+                  browser_item_count: browserItems.length,
+                  context: canvasContext || null,
+                  season: canvasSeason || null,
+                },
+                items: [],
+              });
+
+              setCanvasId(savedCanvas.id);
+              setItems(reindexCanvasItems(savedCanvas.items || []));
+              setTitle(savedCanvas.title || title || DEFAULT_CANVAS_TITLE);
+              setOrigin(savedCanvas.origin || origin || 'manual');
+              setBackgroundColor(normalizeCanvasBackground(savedCanvas.background_color || DEFAULT_BACKGROUND));
+              setCanvasContext(String(savedCanvas.metadata?.context || '').trim());
+              setCanvasSeason(savedCanvas.metadata?.season || null);
+              await setActiveStyleCanvasSession({
+                canvasId: savedCanvas.id,
+                title: savedCanvas.title || title || DEFAULT_CANVAS_TITLE,
+                origin: savedCanvas.origin || origin || 'manual',
+              });
+            } catch (error: any) {
+              setItems(previousItems);
+              Alert.alert('Clear all error', error?.message || 'Could not clear this canvas.');
+            } finally {
+              setSavingCanvas(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [
+    backgroundColor,
+    browserItems.length,
+    canvasContext,
+    canvasId,
+    canvasSeason,
+    closingCanvas,
+    items,
+    origin,
+    savingCanvas,
+    title,
+  ]);
+
   const moveSelectedLayer = useCallback(
     (direction: 'front' | 'back') => {
       if (!selectedItemId) return;
@@ -521,10 +917,22 @@ export default function StyleCanvasScreen({ navigation }: any) {
       return 'Locked pieces stay in place until you unlock them.';
     }
 
-    return 'Use the controls below to change layer order or remove this piece.';
-  }, [selectedItem]);
+    if (!canMoveSelectedBack && !canMoveSelectedFront) {
+      return 'This is the only piece on the board.';
+    }
 
-  const dockReserveSpace = selectedItem ? 128 : 84;
+    if (!canMoveSelectedBack) {
+      return 'This piece is already at the back of the stack.';
+    }
+
+    if (!canMoveSelectedFront) {
+      return 'This piece is already at the front of the stack.';
+    }
+
+    return 'Use the controls below to change layer order or remove this piece.';
+  }, [canMoveSelectedBack, canMoveSelectedFront, selectedItem]);
+
+  const dockReserveSpace = selectedItem ? 168 : items.length ? 118 : 84;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom']}>
@@ -598,9 +1006,15 @@ export default function StyleCanvasScreen({ navigation }: any) {
                 <View style={styles.emptyIconWrap}>
                   <Ionicons name="color-wand-outline" size={26} color={colors.textPrimary} />
                 </View>
-                <Text style={styles.emptyTitle}>Start building with pieces you actually want to wear.</Text>
+                <Text style={styles.emptyTitle}>
+                  {isClosetOnlyCanvas
+                    ? 'Start building with pieces already in your closet.'
+                    : 'Start building with pieces you actually want to wear.'}
+                </Text>
                 <Text style={styles.emptyCopy}>
-                  Pull in browser finds, closet staples, or a fresh product URL and arrange the look visually.
+                  {isClosetOnlyCanvas
+                    ? 'Pull in your closet staples and arrange the look visually before saving or trying it on.'
+                    : 'Pull in browser finds, closet staples, or a fresh product URL and arrange the look visually.'}
                 </Text>
               </View>
             ) : null}
@@ -620,6 +1034,31 @@ export default function StyleCanvasScreen({ navigation }: any) {
         </View>
       </View>
 
+      <View pointerEvents="none" style={styles.hiddenPreviewCaptureWrap}>
+        <ViewShot
+          ref={previewCaptureRef}
+          options={{ format: 'jpg', quality: 0.94 }}
+          style={styles.hiddenPreviewCaptureShot}
+        >
+          <View style={[styles.hiddenPreviewStage, { backgroundColor }]}>
+            <View style={styles.stageGlowLarge} />
+            <View style={styles.stageGlowSmall} />
+            {items.map((item) => (
+              <StyleCanvasBoardItem
+                key={`preview-${item.id}`}
+                item={item}
+                selected={false}
+                interactive={false}
+                showLockedBadge={false}
+                stageWidth={CANVAS_PREVIEW_STAGE_WIDTH}
+                stageHeight={CANVAS_PREVIEW_STAGE_HEIGHT}
+                onImageLoadEnd={handlePreviewItemLoadEnd}
+              />
+            ))}
+          </View>
+        </ViewShot>
+      </View>
+
       <View
         pointerEvents="box-none"
         style={[styles.controlDockWrap, { paddingBottom: Math.max(insets.bottom, spacing.sm) + spacing.xs }]}
@@ -631,15 +1070,15 @@ export default function StyleCanvasScreen({ navigation }: any) {
               activeOpacity={0.92}
               onPress={() => {
                 setAddSheetVisible(true);
-                if (origin === 'browser' && browserItems.length) {
+                if (allowedSources.includes('browser') && origin === 'browser' && browserItems.length) {
                   setAddSource('browser');
                   return;
                 }
-                setAddSource('closet');
+                setAddSource(allowedSources.includes('closet') ? 'closet' : allowedSources[0] || 'closet');
               }}
             >
               <Ionicons name="add" size={18} color={colors.textOnAccent} />
-              <Text style={styles.addButtonText}>Add Items</Text>
+              <Text style={styles.addButtonText}>{isClosetOnlyCanvas ? 'Add Closet Pieces' : 'Add Items'}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -650,7 +1089,7 @@ export default function StyleCanvasScreen({ navigation }: any) {
                 (savingOutfit || savingCanvas || loadingCanvas) && styles.primaryActionDisabled,
               ]}
               onPress={() => {
-                void handleSaveAsOutfit();
+                handleOpenSaveAsOutfit();
               }}
             >
               {savingOutfit ? (
@@ -682,6 +1121,20 @@ export default function StyleCanvasScreen({ navigation }: any) {
             </TouchableOpacity>
           </View>
 
+          {items.length ? (
+            <View style={styles.utilityRow}>
+              <TouchableOpacity
+                activeOpacity={0.86}
+                disabled={savingCanvas || closingCanvas || loadingCanvas}
+                style={[styles.clearAllButton, (savingCanvas || closingCanvas || loadingCanvas) && styles.primaryActionDisabled]}
+                onPress={clearAllItems}
+              >
+                <Ionicons name="trash-outline" size={14} color={colors.textSecondary} />
+                <Text style={styles.clearAllButtonText}>Clear All</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
           {selectedItem ? (
             <View style={styles.selectionToolbar}>
               <View style={styles.selectionHeader}>
@@ -693,11 +1146,19 @@ export default function StyleCanvasScreen({ navigation }: any) {
                 </View>
               </View>
               <View style={styles.selectionActionRow}>
-                <TouchableOpacity style={styles.selectionActionButton} onPress={() => moveSelectedLayer('back')}>
+                <TouchableOpacity
+                  style={[styles.selectionActionButton, !canMoveSelectedBack && styles.selectionActionButtonDisabled]}
+                  disabled={!canMoveSelectedBack}
+                  onPress={() => moveSelectedLayer('back')}
+                >
                   <Ionicons name="arrow-down-outline" size={14} color={colors.textPrimary} />
                   <Text style={styles.selectionActionButtonText}>Back</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.selectionActionButton} onPress={() => moveSelectedLayer('front')}>
+                <TouchableOpacity
+                  style={[styles.selectionActionButton, !canMoveSelectedFront && styles.selectionActionButtonDisabled]}
+                  disabled={!canMoveSelectedFront}
+                  onPress={() => moveSelectedLayer('front')}
+                >
                   <Ionicons name="arrow-up-outline" size={14} color={colors.textPrimary} />
                   <Text style={styles.selectionActionButtonText}>Front</Text>
                 </TouchableOpacity>
@@ -718,17 +1179,18 @@ export default function StyleCanvasScreen({ navigation }: any) {
                 </TouchableOpacity>
               </View>
             </View>
-          ) : (
+          ) : items.length ? (
             <Text style={styles.selectionSupportText} numberOfLines={1}>
               {selectionSupportText}
             </Text>
-          )}
+          ) : null}
         </View>
       </View>
 
       <StyleCanvasAddItemsSheet
         visible={addSheetVisible}
         source={addSource}
+        availableSources={allowedSources}
         onChangeSource={setAddSource}
         onClose={() => setAddSheetVisible(false)}
         closetItems={closetItems}
@@ -757,6 +1219,25 @@ export default function StyleCanvasScreen({ navigation }: any) {
         }}
         isSubmittingUrl={importingUrl}
         isAddingSelected={false}
+      />
+      {saveSheetModal}
+      {travelCollectionModal}
+      <UpgradeLimitModal
+        visible={upgradeModal.visible}
+        featureName={upgradeModal.featureName}
+        used={upgradeModal.used}
+        limit={upgradeModal.limit}
+        remaining={upgradeModal.remaining}
+        tier={upgradeModal.tier}
+        recommendedUpgrade={upgradeModal.recommendedUpgrade}
+        isPaywallAvailable={isPaywallAvailable}
+        onClose={() => setUpgradeModal(HIDDEN_UPGRADE_MODAL_STATE)}
+        onUpgrade={() => {
+          void openUpgrade();
+        }}
+        onBuyTryOnPack={() => {
+          void openTryOnPack();
+        }}
       />
     </SafeAreaView>
   );
@@ -841,6 +1322,25 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     overflow: 'hidden',
     ...shadows.card,
+  },
+  hiddenPreviewCaptureWrap: {
+    position: 'absolute',
+    left: -9999,
+    top: -9999,
+    opacity: 0,
+  },
+  hiddenPreviewCaptureShot: {
+    width: CANVAS_PREVIEW_STAGE_WIDTH,
+    height: CANVAS_PREVIEW_STAGE_HEIGHT,
+  },
+  hiddenPreviewStage: {
+    width: CANVAS_PREVIEW_STAGE_WIDTH,
+    height: CANVAS_PREVIEW_STAGE_HEIGHT,
+    borderRadius: 28,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.border,
+    position: 'relative',
   },
   stage: {
     flex: 1,
@@ -991,6 +1491,28 @@ const styles = StyleSheet.create({
   primaryActionDisabled: {
     opacity: 0.58,
   },
+  utilityRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  clearAllButton: {
+    minHeight: 30,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  clearAllButtonText: {
+    color: colors.textSecondary,
+    fontSize: 11.5,
+    fontWeight: '700',
+    fontFamily: typography.fontFamily,
+  },
   selectionEyebrow: {
     color: colors.textMuted,
     fontSize: 10.5,
@@ -1044,6 +1566,9 @@ const styles = StyleSheet.create({
   },
   selectionActionButtonRemove: {
     backgroundColor: colors.surfaceContainerLowest,
+  },
+  selectionActionButtonDisabled: {
+    opacity: 0.45,
   },
   selectionActionButtonText: {
     color: colors.textPrimary,

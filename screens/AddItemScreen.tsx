@@ -4,21 +4,26 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  SafeAreaView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { File, Paths } from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import AddCaptureDock from '../components/AddItem/AddCaptureDock';
 import AddCaptureStage from '../components/AddItem/AddCaptureStage';
 import AddCaptureTopBar from '../components/AddItem/AddCaptureTopBar';
 import AddItemDetailsSheet from '../components/AddItem/AddItemDetailsSheet';
-import { apiPost } from '../lib/api';
+import UpgradeLimitModal from '../components/subscriptions/UpgradeLimitModal';
+import { useUpgradeWall } from '../hooks/useUpgradeWall';
+import { apiPostWithRateLimitRetry } from '../lib/api';
+import { buildUpgradeModalState, HIDDEN_UPGRADE_MODAL_STATE } from '../lib/subscriptions/modalState';
+import { canUseFeature } from '../lib/subscriptions/usageService';
 import {
   extractNormalizedTags,
   type TaggedFashionItem,
@@ -28,8 +33,10 @@ import {
 import { supabase } from '../lib/supabase';
 import { colors, spacing, typography } from '../lib/theme';
 import { buildWardrobeInsertPayload } from '../lib/wardrobePayload';
+import { isSubtypeInCategory } from '../lib/wardrobeTaxonomy';
 import {
   insertWardrobeItemWithCompatibility,
+  prepareWardrobeItemDerivatives,
   uploadWardrobeImageBytes,
 } from '../lib/wardrobeStorage';
 
@@ -59,6 +66,14 @@ type RouteParams = {
 
 type SelectedImage = {
   uri: string;
+};
+
+type RemoveBackgroundResponse = {
+  success?: boolean;
+  cutout_url?: string | null;
+  cutout_storage_url?: string | null;
+  provider?: string | null;
+  error?: string | null;
 };
 
 function buildTagImportContext(
@@ -115,22 +130,26 @@ async function ensureLocalUri(uri: string) {
   return localUri;
 }
 
-function getMimeType(uri: string) {
-  const ext = uri.split('?')[0].split('.').pop()?.toLowerCase();
-  if (ext === 'png') return 'image/png';
-  if (ext === 'gif') return 'image/gif';
-  if (ext === 'webp') return 'image/webp';
-  return 'image/jpeg';
+async function optimizeWardrobeUploadImage(uri: string) {
+  const normalizedUri = await ensureLocalUri(uri);
+  const manipulated = await ImageManipulator.manipulateAsync(
+    normalizedUri,
+    [{ resize: { width: 900 } }],
+    {
+      compress: 0.72,
+      format: ImageManipulator.SaveFormat.JPEG,
+    },
+  );
+
+  return manipulated.uri || normalizedUri;
 }
 
 async function uploadImage(
   uri: string,
   userId: string,
-): Promise<{ imagePath: string; imageUrl: string | null; accessUrl: string | null }> {
-  const localUri = await ensureLocalUri(uri);
-  const extension = localUri.split('.').pop()?.split('?')[0] || 'jpg';
-  const mimeType = getMimeType(localUri);
-  const file = new File(localUri);
+): Promise<{ imagePath: string; imageUrl: string | null; accessUrl: string | null; storageUrl?: string | null }> {
+  const optimizedUri = await optimizeWardrobeUploadImage(uri);
+  const file = new File(optimizedUri);
   const info = await file.info();
 
   if (!info.exists) {
@@ -144,8 +163,8 @@ async function uploadImage(
 
   return uploadWardrobeImageBytes({
     bytes,
-    contentType: mimeType,
-    extension,
+    contentType: 'image/jpeg',
+    extension: 'jpg',
     userId,
   });
 }
@@ -159,7 +178,8 @@ export default function AddItemScreen() {
   const [images, setImages] = useState<SelectedImage[]>([]);
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [name, setName] = useState('');
-  const [type, setType] = useState('');
+  const [mainCategory, setMainCategory] = useState('');
+  const [subcategory, setSubcategory] = useState('');
   const [color, setColor] = useState('');
   const [vibes, setVibes] = useState('');
   const [season, setSeason] = useState('');
@@ -170,6 +190,8 @@ export default function AddItemScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState('Saving item');
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+  const [upgradeModal, setUpgradeModal] = useState(HIDDEN_UPGRADE_MODAL_STATE);
+  const { isPaywallAvailable, openTryOnPack, openUpgrade } = useUpgradeWall();
 
   const selectedImage = useMemo(
     () => (selectedImageIndex != null && images[selectedImageIndex] ? images[selectedImageIndex] : null),
@@ -208,7 +230,8 @@ export default function AddItemScreen() {
     setSelectedImageIndex(null);
     setImportMeta(null);
     setName('');
-    setType('');
+    setMainCategory('');
+    setSubcategory('');
     setColor('');
     setVibes('');
     setSeason('');
@@ -381,6 +404,7 @@ export default function AddItemScreen() {
   }) => {
     const uploadedImage = await uploadImage(image.uri, userId);
     const imageUrl = uploadedImage.accessUrl;
+    const originalImageUrl = uploadedImage.storageUrl || uploadedImage.imageUrl || uploadedImage.accessUrl || null;
     const sourceImageForThis = /^https?:\/\//i.test(image.uri)
       ? image.uri
       : (importMeta?.source_image_url ?? null);
@@ -389,33 +413,87 @@ export default function AddItemScreen() {
       throw new Error('Unable to resolve uploaded image for tagging.');
     }
 
+    let cutoutImageUrl: string | null = null;
+    let bgRemoved = false;
+    setLoadingLabel('Removing background...');
+    try {
+      const { response: cutoutResponse, data: cutoutPayload } = await apiPostWithRateLimitRetry<RemoveBackgroundResponse>('/images/remove-background', {
+        image_url: imageUrl,
+      }, {
+        maxAttempts: 3,
+        fallbackMs: 2000,
+        onRetry: () => {
+          setLoadingLabel('Background service busy, retrying...');
+        },
+      });
+      const cutoutError =
+        cutoutPayload && typeof cutoutPayload === 'object' && 'error' in cutoutPayload
+          ? String(cutoutPayload.error || '').trim()
+          : '';
+
+      if (cutoutResponse.ok && !cutoutError) {
+        const payload = cutoutPayload as RemoveBackgroundResponse;
+        cutoutImageUrl = payload.cutout_storage_url || payload.cutout_url || null;
+        bgRemoved = Boolean(payload.success && cutoutImageUrl);
+      } else {
+        console.warn('Background removal failed; continuing with original image.', {
+          status: cutoutResponse.status,
+          error: cutoutError || 'Unknown WaveSpeed error',
+        });
+      }
+    } catch (error: any) {
+      console.warn('Background removal request failed; continuing with original image.', {
+        error: error?.message || error,
+      });
+    }
+
     let tags: TaggedFashionItem | undefined;
     if (!manualOverride) {
-      const tagResponse = await apiPost('/tag', {
+      setLoadingLabel('Analyzing item...');
+      const { response: tagResponse, data: taggingPayload } = await apiPostWithRateLimitRetry<TaggingResponse>('/tag', {
         image_url: imageUrl,
         import_context: buildTagImportContext(importMeta, sourceImageForThis ?? imageUrl),
+      }, {
+        maxAttempts: 3,
+        fallbackMs: 2000,
+        onRetry: () => {
+          setLoadingLabel('Analysis service busy, retrying...');
+        },
       });
-      const taggingPayload = (await tagResponse.json()) as TaggingResponse;
       tags = extractNormalizedTags(taggingPayload);
       if (!tagResponse.ok || taggingPayload?.error) {
-        throw new Error(taggingPayload?.error || 'AI tagging failed');
+        throw new Error(
+          tagResponse.status === 429
+            ? 'Closet import is temporarily busy. Please try again in a moment.'
+            : taggingPayload?.error || 'AI tagging failed',
+        );
       }
     }
 
     const importMethod = importMeta?.method || (manualOverride ? 'manual' : 'photos');
     const insertPayload = buildWardrobeInsertPayload({
       userId,
-      uploadedImage,
+      uploadedImage: {
+        ...uploadedImage,
+        imageUrl: originalImageUrl,
+        cutoutImageUrl,
+        bgRemoved,
+      },
       normalizedTags: tags,
       importMeta: {
         ...importMeta,
-        source_image_url: sourceImageForThis ?? importMeta?.source_image_url ?? null,
-        original_image_url: sourceImageForThis ?? importMeta?.original_image_url ?? importMeta?.source_image_url ?? null,
+        source_image_url: sourceImageForThis ?? importMeta?.source_image_url ?? originalImageUrl,
+        original_image_url:
+          sourceImageForThis ??
+          importMeta?.original_image_url ??
+          importMeta?.source_image_url ??
+          originalImageUrl,
       },
       manualOverride,
       manualFields: {
         name,
-        type,
+        main_category: mainCategory,
+        subcategory,
         color,
         vibes,
         season,
@@ -426,19 +504,21 @@ export default function AddItemScreen() {
       sourceTitleFallback: importMeta?.source_title ?? null,
     });
 
+    setLoadingLabel(openVerdict ? 'Preparing verdict' : 'Saving item...');
     const { data: insertedItem, error: insertError } = await insertWardrobeItemWithCompatibility(insertPayload);
     if (insertError) {
       throw new Error(insertError.message);
     }
 
-    return insertedItem;
+    return await prepareWardrobeItemDerivatives(insertedItem);
   }, [
     color,
     importMeta,
     manualOverride,
+    mainCategory,
     name,
     season,
-    type,
+    subcategory,
     vibes,
   ]);
 
@@ -459,6 +539,19 @@ export default function AddItemScreen() {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError || !user) {
       Alert.alert('Error', 'You must be logged in to add clothing.');
+      return;
+    }
+
+    const closetAccess = await canUseFeature(user.id, 'closet_item');
+    const numericRemaining =
+      closetAccess.remaining === 'unlimited'
+        ? Number.POSITIVE_INFINITY
+        : Number.isFinite(Number(closetAccess.remaining))
+          ? Number(closetAccess.remaining)
+          : 0;
+
+    if (!closetAccess.allowed || numericRemaining < targetImages.length) {
+      setUpgradeModal(buildUpgradeModalState('closet_item', closetAccess));
       return;
     }
 
@@ -523,13 +616,14 @@ export default function AddItemScreen() {
     importSingleImage,
     importMeta,
     manualOverride,
+    mainCategory,
     name,
     navigateToVerdict,
     season,
     selectedImage,
     showBatchSaveAlert,
     showDirectSaveAlert,
-    type,
+    subcategory,
     vibes,
   ]);
 
@@ -599,14 +693,19 @@ export default function AddItemScreen() {
             visible={detailsVisible}
             manualOverride={manualOverride}
             name={name}
-            type={type}
+            mainCategory={mainCategory}
+            subcategory={subcategory}
             color={color}
             vibes={vibes}
             season={season}
             onClose={() => setDetailsVisible(false)}
             onSetManualOverride={setManualOverride}
             onSetName={setName}
-            onSetType={setType}
+            onSetMainCategory={(next) => {
+              setMainCategory(next);
+              setSubcategory((current) => (isSubtypeInCategory(current, next) ? current : ''));
+            }}
+            onSetSubcategory={setSubcategory}
             onSetColor={setColor}
             onSetVibes={setVibes}
             onSetSeason={setSeason}
@@ -620,11 +719,29 @@ export default function AddItemScreen() {
             <ActivityIndicator size="small" color={colors.textPrimary} />
             <Text style={styles.loadingTitle}>{loadingLabel}</Text>
             <Text style={styles.loadingText}>
-              Uploading {uploadProgress.current} of {uploadProgress.total}
+              Item {uploadProgress.current} of {uploadProgress.total}
             </Text>
           </View>
         </View>
       ) : null}
+
+      <UpgradeLimitModal
+        visible={upgradeModal.visible}
+        featureName={upgradeModal.featureName}
+        used={upgradeModal.used}
+        limit={upgradeModal.limit}
+        remaining={upgradeModal.remaining}
+        tier={upgradeModal.tier}
+        recommendedUpgrade={upgradeModal.recommendedUpgrade}
+        isPaywallAvailable={isPaywallAvailable}
+        onClose={() => setUpgradeModal(HIDDEN_UPGRADE_MODAL_STATE)}
+        onUpgrade={() => {
+          void openUpgrade();
+        }}
+        onBuyTryOnPack={() => {
+          void openTryOnPack();
+        }}
+      />
     </SafeAreaView>
   );
 }

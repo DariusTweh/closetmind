@@ -24,7 +24,7 @@ export default function OutfitDetailItemCard({
 
   return (
     <Pressable style={styles.card} onPress={onPress} disabled={!onPress}>
-      <WardrobeItemImage item={item} style={styles.image} />
+      <WardrobeItemImage item={item} style={styles.image} imagePreference="display" />
 
       <View style={styles.content}>
         <View style={styles.roleBadge}>

@@ -8,20 +8,24 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import EditItemChipGroup from '../Closet/edit/EditItemChipGroup';
 import { colors, radii, spacing, typography } from '../../lib/theme';
+import { CATEGORY_OPTIONS, getSubtypeOptionsForCategory } from '../../lib/wardrobeTaxonomy';
 
 type AddItemDetailsSheetProps = {
   visible: boolean;
   manualOverride: boolean;
   name: string;
-  type: string;
+  mainCategory: string;
+  subcategory: string;
   color: string;
   vibes: string;
   season: string;
   onClose: () => void;
   onSetManualOverride: (value: boolean) => void;
   onSetName: (value: string) => void;
-  onSetType: (value: string) => void;
+  onSetMainCategory: (value: string) => void;
+  onSetSubcategory: (value: string) => void;
   onSetColor: (value: string) => void;
   onSetVibes: (value: string) => void;
   onSetSeason: (value: string) => void;
@@ -47,23 +51,35 @@ function DetailInput({
   );
 }
 
+function formatChipLabel(value: string) {
+  return String(value || '')
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
 export default function AddItemDetailsSheet({
   visible,
   manualOverride,
   name,
-  type,
+  mainCategory,
+  subcategory,
   color,
   vibes,
   season,
   onClose,
   onSetManualOverride,
   onSetName,
-  onSetType,
+  onSetMainCategory,
+  onSetSubcategory,
   onSetColor,
   onSetVibes,
   onSetSeason,
 }: AddItemDetailsSheetProps) {
   if (!visible) return null;
+
+  const subtypeOptions = getSubtypeOptionsForCategory(mainCategory);
 
   return (
     <View style={styles.overlay} pointerEvents="box-none">
@@ -105,7 +121,30 @@ export default function AddItemDetailsSheet({
 
           {manualOverride ? (
             <>
-              <DetailInput placeholder="Type" value={type} onChangeText={onSetType} />
+              <View style={styles.fieldBlock}>
+                <Text style={styles.fieldLabel}>Main Category</Text>
+                <EditItemChipGroup
+                  options={CATEGORY_OPTIONS.map((value) => ({ value, label: formatChipLabel(value) }))}
+                  value={mainCategory}
+                  onChange={onSetMainCategory}
+                />
+              </View>
+
+              <View style={styles.fieldBlock}>
+                <Text style={styles.fieldLabel}>Subtype</Text>
+                {subtypeOptions.length ? (
+                  <EditItemChipGroup
+                    options={subtypeOptions}
+                    value={subcategory}
+                    onChange={onSetSubcategory}
+                  />
+                ) : (
+                  <Text style={styles.helperText}>
+                    Choose a main category first to refine the subtype.
+                  </Text>
+                )}
+              </View>
+
               <DetailInput placeholder="Color" value={color} onChangeText={onSetColor} />
               <DetailInput placeholder="Vibes" value={vibes} onChangeText={onSetVibes} />
               <DetailInput placeholder="Season" value={season} onChangeText={onSetSeason} />
@@ -184,6 +223,18 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
+  },
+  fieldBlock: {
+    marginBottom: spacing.sm,
+  },
+  fieldLabel: {
+    marginBottom: 8,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 2.2,
+    textTransform: 'uppercase',
+    color: colors.textSecondary,
+    fontFamily: typography.fontFamily,
   },
   modeRow: {
     flexDirection: 'row',

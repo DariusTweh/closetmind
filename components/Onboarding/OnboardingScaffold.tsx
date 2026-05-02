@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  SafeAreaView,
   ScrollView,
   StyleProp,
   StyleSheet,
@@ -8,6 +7,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing, typography } from '../../lib/theme';
 
 type OnboardingScaffoldProps = {
@@ -24,7 +24,7 @@ type OnboardingScaffoldProps = {
 
 export default function OnboardingScaffold({
   step,
-  eyebrow = 'ClosetMind Setup',
+  eyebrow = 'Klozu Setup',
   title,
   subtitle,
   children,

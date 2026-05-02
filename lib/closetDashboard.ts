@@ -16,6 +16,13 @@ type DashboardRequestOptions = {
   outfitLocation: string | null;
   currentOutfit: any[];
   wardrobe: any[];
+  avoidIds?: Array<string | null | undefined>;
+};
+
+type DailyFitEvaluation = {
+  accepted: boolean;
+  score: number;
+  issues: string[];
 };
 
 export function parseTemperatureValue(weatherText: string | null | undefined) {
@@ -52,24 +59,201 @@ export function buildDailyFitLookupKeys(date = new Date()) {
   return [...new Set([localToday, utcToday, localYesterday])];
 }
 
+function normalizeGeneratedOutfitEntries(payload: any) {
+  if (!payload || typeof payload !== 'object') return [] as Array<{ id: string; reason: string | null }>;
+
+  const fromOutfit = Array.isArray(payload?.outfit) ? payload.outfit : [];
+  if (fromOutfit.length) {
+    return fromOutfit
+      .map((entry: any) => ({
+        id: String(entry?.id || '').trim(),
+        reason: String(entry?.reason || '').trim() || null,
+      }))
+      .filter((entry) => entry.id);
+  }
+
+  const stepValues = payload?.steps && typeof payload.steps === 'object'
+    ? Object.values(payload.steps)
+    : [];
+
+  return (Array.isArray(stepValues) ? stepValues : [])
+    .map((entry: any) => ({
+      id: String(entry?.id || '').trim(),
+      reason: String(entry?.reason || '').trim() || null,
+    }))
+    .filter((entry) => entry.id);
+}
+
+function normalizeTextToken(value: any) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function itemSearchText(item: any) {
+  return [
+    item?.name,
+    item?.type,
+    item?.subcategory,
+    item?.main_category,
+    item?.garment_function,
+    item?.style_role,
+    item?.material_guess,
+    item?.formality,
+    ...(Array.isArray(item?.occasion_tags) ? item.occasion_tags : []),
+    ...(Array.isArray(item?.weather_use) ? item.weather_use : []),
+  ]
+    .map((value) => normalizeTextToken(value))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function isShortBottom(item: any) {
+  const text = itemSearchText(item);
+  return /\b(short|shorts)\b/.test(text);
+}
+
+function isTailoredOuterwear(item: any) {
+  const text = itemSearchText(item);
+  return /\b(blazer|sport coat|suit jacket|tailored jacket)\b/.test(text);
+}
+
+function isHeavyOuterwear(item: any) {
+  const text = itemSearchText(item);
+  return /\b(puffer|parka|overcoat|heavy coat|wool coat|trench|pea coat|shearling)\b/.test(text);
+}
+
+function isAthleticOrLounge(item: any) {
+  const text = itemSearchText(item);
+  return /\b(athletic|gym|training|running|basketball|mesh short|sport short|track|jogger|sweat|lounge)\b/.test(text);
+}
+
+function getItemFormalityLevel(item: any) {
+  const explicit = normalizeTextToken(item?.formality);
+  if (['formal', 'dressy'].includes(explicit)) return 4;
+  if (['elevated', 'smart_casual', 'smart-casual', 'smart casual'].includes(explicit)) return 3;
+  if (['casual', 'everyday'].includes(explicit)) return 2;
+  if (['athletic', 'lounge'].includes(explicit)) return 1;
+
+  const text = itemSearchText(item);
+  if (/\b(blazer|tailored|formal|dressy|suit|trouser|trousers|slacks)\b/.test(text)) return 4;
+  if (/\b(loafer|button-up|button down|oxford|knit polo|smart)\b/.test(text)) return 3;
+  if (/\b(athletic|gym|track|mesh short|running|training|sweat|lounge)\b/.test(text)) return 1;
+  return 2;
+}
+
+export function evaluateDailyFitCandidate(items: any[], weatherText?: string | null): DailyFitEvaluation {
+  const outfitItems = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!outfitItems.length) {
+    return {
+      accepted: false,
+      score: -100,
+      issues: ['empty_outfit'],
+    };
+  }
+
+  const temperature = parseTemperatureValue(weatherText);
+  const issues: string[] = [];
+
+  const shortsPresent = outfitItems.some((item) => isShortBottom(item));
+  const tailoredOuterwearPresent = outfitItems.some((item) => isTailoredOuterwear(item));
+  const heavyOuterwearPresent = outfitItems.some((item) => isHeavyOuterwear(item));
+  const athleticPresent = outfitItems.some((item) => isAthleticOrLounge(item));
+  const formalityLevels = outfitItems.map((item) => getItemFormalityLevel(item));
+  const maxFormality = formalityLevels.length ? Math.max(...formalityLevels) : 2;
+  const minFormality = formalityLevels.length ? Math.min(...formalityLevels) : 2;
+
+  if (shortsPresent && tailoredOuterwearPresent) {
+    issues.push('tailored_outerwear_with_shorts');
+  }
+
+  if (shortsPresent && maxFormality >= 4 && temperature < 82) {
+    issues.push('dressy_shorts_mismatch');
+  }
+
+  if (temperature <= 62 && shortsPresent) {
+    issues.push('shorts_too_cold');
+  }
+
+  if (temperature >= 84 && heavyOuterwearPresent) {
+    issues.push('outerwear_too_heavy_for_heat');
+  }
+
+  if (maxFormality - minFormality >= 3) {
+    issues.push('formality_gap_too_wide');
+  }
+
+  if (athleticPresent && maxFormality >= 4) {
+    issues.push('athletic_with_tailored');
+  }
+
+  return {
+    accepted: issues.length === 0,
+    score: 100 - issues.length * 30,
+    issues,
+  };
+}
+
+export function mapGeneratedOutfitToWardrobe(payload: any, wardrobe: any[]) {
+  const entries = normalizeGeneratedOutfitEntries(payload);
+  if (!entries.length) return [] as any[];
+
+  const wardrobeById = new Map(
+    (Array.isArray(wardrobe) ? wardrobe : []).map((item) => [String(item?.id || ''), item]),
+  );
+
+  return entries
+    .map((entry) => {
+      const match = wardrobeById.get(entry.id);
+      if (!match) return null;
+      return {
+        ...match,
+        reason: entry.reason || match?.reason || null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeWeatherDescription(weatherText: string | null | undefined) {
+  const raw = String(weatherText || '').trim();
+  if (!raw) return 'Unknown';
+
+  const withoutTemp = raw
+    .replace(/-?\d+(\.\d+)?\s*°?\s*[fFcC]?/g, ' ')
+    .replace(/[,/]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return withoutTemp || raw;
+}
+
 export function buildDashboardRegenerationRequest({
   outfitWeather,
   outfitLocation,
   currentOutfit,
   wardrobe,
+  avoidIds = [],
 }: DashboardRequestOptions) {
   const temperature = parseTemperatureValue(outfitWeather);
   const season = inferSeasonFromDate();
   const location = outfitLocation || 'your area';
+  const recentIds = Array.isArray(currentOutfit)
+    ? currentOutfit.map((item) => item?.id).filter(Boolean)
+    : [];
+  const normalizedAvoidIds = Array.from(
+    new Set(
+      [...recentIds, ...(Array.isArray(avoidIds) ? avoidIds : [])]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean),
+    ),
+  );
 
   return {
-    context: `Daily fit for ${temperature}°F in ${location}`,
+    context:
+      `Daily fit for ${temperature}°F in ${location}. Build a real, wearable everyday outfit from the closet. ` +
+      `Keep formality consistent, respect the weather, and avoid incoherent pairings like blazers with casual shorts or heavy outerwear in heat.`,
     season,
     temperature,
-    recent_item_ids: Array.isArray(currentOutfit)
-      ? currentOutfit.map((item) => item?.id).filter(Boolean)
-      : [],
-    avoidIds: [],
+    recent_item_ids: recentIds,
+    avoidIds: normalizedAvoidIds,
     wardrobe: toStyleRequestWardrobeList(wardrobe),
   };
 }
@@ -158,7 +342,7 @@ export async function fetchDailyFitForUser(userId: string) {
   const lookupKeys = buildDailyFitLookupKeys();
   const { data, error } = await supabase
     .from('daily_outfits')
-    .select('*')
+    .select('id, user_id, outfit_date, items, context, weather, created_at')
     .eq('user_id', userId)
     .in('outfit_date', lookupKeys)
     .order('created_at', { ascending: false });
@@ -178,6 +362,81 @@ export async function fetchDailyFitForUser(userId: string) {
   }
 
   return rows[0] || null;
+}
+
+function isMissingColumnOrRelationError(error: any) {
+  const normalized = String(error?.message || error?.details || error || '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes('does not exist') ||
+    normalized.includes('could not find the table') ||
+    normalized.includes('schema cache') ||
+    normalized.includes('column') ||
+    normalized.includes('relation')
+  );
+}
+
+export async function persistManualDailyFit(args: {
+  userId: string;
+  items: any[];
+  outfitWeather?: string | null;
+  outfitLocation?: string | null;
+  context?: any;
+}) {
+  const userId = String(args?.userId || '').trim();
+  const normalizedItems = (Array.isArray(args?.items) ? args.items : [])
+    .map((item: any) => ({
+      id: String(item?.id || '').trim(),
+      reason: String(item?.reason || '').trim() || null,
+    }))
+    .filter((item) => item.id);
+
+  if (!userId || !normalizedItems.length) return false;
+
+  const outfitDate = buildDailyFitLookupKeys(new Date())[0];
+  const weatherText = String(args?.outfitWeather || '').trim();
+  const weatherPayload = {
+    temperature: parseTemperatureValue(weatherText),
+    description: normalizeWeatherDescription(weatherText),
+    city: String(args?.outfitLocation || '').trim() || 'Your Area',
+    source: 'manual_regenerate',
+  };
+  const contextPayload = args?.context ?? null;
+
+  let response: any = await supabase
+    .from('daily_outfits')
+    .upsert(
+      {
+        user_id: userId,
+        outfit_date: outfitDate,
+        items: normalizedItems,
+        context: contextPayload,
+        weather: weatherPayload,
+      },
+      { onConflict: 'user_id,outfit_date' },
+    );
+
+  if (response?.error && isMissingColumnOrRelationError(response.error)) {
+    response = await supabase
+      .from('daily_outfits')
+      .upsert(
+        {
+          user_id: userId,
+          outfit_date: outfitDate,
+          items: normalizedItems,
+        },
+        { onConflict: 'user_id,outfit_date' },
+      );
+  }
+
+  if (response?.error) {
+    console.warn('persistManualDailyFit failed:', response.error?.message || response.error);
+    return false;
+  }
+
+  return true;
 }
 
 export async function maybeRefreshUserLocation(userId: string) {

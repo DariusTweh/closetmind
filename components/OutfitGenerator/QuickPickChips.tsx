@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { spacing, typography } from '../../lib/theme';
 
 type QuickPickChipsProps = {
@@ -8,6 +8,7 @@ type QuickPickChipsProps = {
   selectedValue: string | string[] | null;
   onSelect: (value: string | string[]) => void;
   multiSelect?: boolean;
+  horizontal?: boolean;
 };
 
 export default function QuickPickChips({
@@ -16,45 +17,60 @@ export default function QuickPickChips({
   selectedValue,
   onSelect,
   multiSelect = false,
+  horizontal = false,
 }: QuickPickChipsProps) {
   const selectedList = Array.isArray(selectedValue)
     ? selectedValue.map((entry) => String(entry).toLowerCase())
     : [String(selectedValue || '').toLowerCase()];
 
+  const content = (
+    <>
+      {options.map((option) => {
+        const isSelected = selectedList.includes(option.toLowerCase());
+
+        return (
+          <TouchableOpacity
+            key={option}
+            activeOpacity={0.86}
+            onPress={() => {
+              if (!multiSelect) {
+                onSelect(option);
+                return;
+              }
+
+              const next = new Set(selectedList);
+              if (isSelected) {
+                next.delete(option.toLowerCase());
+              } else {
+                next.add(option.toLowerCase());
+              }
+              onSelect(Array.from(next));
+            }}
+            style={[styles.chip, isSelected && styles.chipSelected]}
+          >
+            <Text style={[styles.chipText, isSelected && styles.chipTextSelected]}>
+              {option}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </>
+  );
+
   return (
     <View style={styles.container}>
       <Text style={styles.label}>{label}</Text>
-      <View style={styles.row}>
-        {options.map((option) => {
-          const isSelected = selectedList.includes(option.toLowerCase());
-
-          return (
-            <TouchableOpacity
-              key={option}
-              activeOpacity={0.86}
-              onPress={() => {
-                if (!multiSelect) {
-                  onSelect(option);
-                  return;
-                }
-
-                const next = new Set(selectedList);
-                if (isSelected) {
-                  next.delete(option.toLowerCase());
-                } else {
-                  next.add(option.toLowerCase());
-                }
-                onSelect(Array.from(next));
-              }}
-              style={[styles.chip, isSelected && styles.chipSelected]}
-            >
-              <Text style={[styles.chipText, isSelected && styles.chipTextSelected]}>
-                {option}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      {horizontal ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.horizontalRow}
+        >
+          {content}
+        </ScrollView>
+      ) : (
+        <View style={styles.row}>{content}</View>
+      )}
     </View>
   );
 }
@@ -75,6 +91,9 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+  },
+  horizontalRow: {
+    paddingRight: spacing.md,
   },
   chip: {
     minHeight: 32,

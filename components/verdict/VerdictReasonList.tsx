@@ -10,7 +10,7 @@ type Props = {
 export default function VerdictReasonList({ reasons }: Props) {
   return (
     <View style={styles.card}>
-      <Text style={styles.title}>Why This Verdict</Text>
+      <Text style={styles.eyebrow}>Why This Verdict</Text>
       <View style={styles.list}>
         {reasons.map((reason, index) => (
           <View key={`${reason}-${index}`} style={styles.row}>
@@ -25,16 +25,23 @@ export default function VerdictReasonList({ reasons }: Props) {
 
 const styles = StyleSheet.create({
   card: {
-    marginBottom: spacing.md + 2,
-    gap: 10,
+    backgroundColor: editorialPalette.surfaceContainerLowest,
+    borderRadius: 20,
+    padding: spacing.md + 2,
+    borderWidth: 1,
+    borderColor: editorialPalette.outlineGhost,
+    marginBottom: spacing.lg,
+    gap: 12,
   },
-  title: {
-    color: editorialPalette.onSurface,
-    fontSize: 18,
+  eyebrow: {
+    color: editorialPalette.onSurfaceVariant,
+    fontSize: 10.5,
     fontWeight: '700',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
   },
   list: {
-    gap: 10,
+    gap: 12,
   },
   row: {
     flexDirection: 'row',
@@ -47,12 +54,12 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
     backgroundColor: editorialPalette.primaryDim,
-    marginTop: 9,
+    marginTop: 8,
   },
   reason: {
     flex: 1,
-    color: editorialPalette.onSurfaceVariant,
-    fontSize: 14.5,
+    color: editorialPalette.onSurface,
+    fontSize: 14,
     lineHeight: 21,
   },
 });

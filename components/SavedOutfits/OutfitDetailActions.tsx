@@ -16,7 +16,7 @@ export default function OutfitDetailActions({
 
   return (
     <View pointerEvents="box-none" style={styles.wrapper}>
-      <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 10) + 10 }]}>
+      <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 8) + 6 }]}>
         <View style={styles.actionsRow}>
           <TouchableOpacity
             activeOpacity={0.88}
@@ -48,7 +48,7 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   bar: {
-    paddingTop: 14,
+    paddingTop: 10,
     paddingHorizontal: spacing.lg,
     backgroundColor: 'rgba(250, 250, 255, 0.98)',
     borderTopWidth: 1,
@@ -59,7 +59,7 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     flex: 1,
-    minHeight: 52,
+    minHeight: 48,
     borderRadius: 15,
     backgroundColor: '#1c1c1c',
     alignItems: 'center',
@@ -75,7 +75,7 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     flex: 1,
-    minHeight: 52,
+    minHeight: 48,
     borderRadius: 15,
     borderWidth: 1,
     borderColor: '#daddd8',

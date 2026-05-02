@@ -1,12 +1,12 @@
 import React from 'react';
 import {
   Animated,
-  SafeAreaView,
   StyleSheet,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 type BrowserTopBarProps = {

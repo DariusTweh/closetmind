@@ -8,15 +8,17 @@ export default function SettingsToggleRow({
   value,
   onValueChange,
   isLast = false,
+  disabled = false,
 }: {
   label: string;
   description?: string;
   value: boolean;
   onValueChange: (next: boolean) => void;
   isLast?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <View style={[styles.row, !isLast && styles.rowDivider]}>
+    <View style={[styles.row, !isLast && styles.rowDivider, disabled && styles.disabled]}>
       <View style={styles.copy}>
         <Text style={styles.label}>{label}</Text>
         {description ? <Text style={styles.description}>{description}</Text> : null}
@@ -24,6 +26,7 @@ export default function SettingsToggleRow({
       <Switch
         value={value}
         onValueChange={onValueChange}
+        disabled={disabled}
         trackColor={{ false: '#d7cfc4', true: '#7f8b73' }}
         thumbColor="#fafaff"
       />
@@ -42,6 +45,9 @@ const styles = StyleSheet.create({
   rowDivider: {
     borderBottomWidth: 1,
     borderBottomColor: '#e7dfd5',
+  },
+  disabled: {
+    opacity: 0.6,
   },
   copy: {
     flex: 1,

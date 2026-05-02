@@ -6,6 +6,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import type { ImageStyle } from 'react-native';
 import { colors, typography } from '../../lib/theme';
 
 export default function TryOnPreviewStage({
@@ -23,6 +24,8 @@ export default function TryOnPreviewStage({
   busyStatusLabel: string;
   tryOnJobId?: string | null;
 }) {
+  const activeImageUri = previewUrl || baseModelUrl || undefined;
+
   return (
     <View style={styles.stage}>
       <View style={styles.stageGlowLarge} />
@@ -45,8 +48,8 @@ export default function TryOnPreviewStage({
       ) : hasAnythingToShow ? (
         <View style={styles.imageWrap}>
           <Image
-            source={{ uri: previewUrl || baseModelUrl || undefined }}
-            style={styles.image}
+            source={{ uri: activeImageUri }}
+            style={styles.image as ImageStyle}
             resizeMode="contain"
           />
         </View>
@@ -62,7 +65,7 @@ export default function TryOnPreviewStage({
 
 const styles = StyleSheet.create({
   stage: {
-    height: 510,
+    height: 552,
     borderRadius: 28,
     borderWidth: 1,
     borderColor: colors.border,
@@ -117,13 +120,15 @@ const styles = StyleSheet.create({
   },
   imageWrap: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 18,
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingHorizontal: 0,
   },
   image: {
     width: '100%',
     height: '100%',
+    alignSelf: 'center',
+    transform: [{ translateY: -22 }, { scale: 1.03 }],
   },
   centerState: {
     flex: 1,

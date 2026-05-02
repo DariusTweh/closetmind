@@ -1,7 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
-import { spacing, typography } from '../../lib/theme';
+import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
+import { useOptionalBottomTabBarHeight } from '../../lib/useOptionalBottomTabBarHeight';
 
 type FloatingGeneratorActionsProps = {
   onSave: () => void;
@@ -16,19 +16,22 @@ export default function FloatingGeneratorActions({
   onEditInputs,
   loading,
 }: FloatingGeneratorActionsProps) {
-  const tabBarHeight = useBottomTabBarHeight();
+  const tabBarHeight = useOptionalBottomTabBarHeight();
 
   return (
-    <View pointerEvents="box-none" style={[styles.wrapper, { bottom: Math.max(tabBarHeight - 1, 0) }]}>
+    <View pointerEvents="box-none" style={[styles.wrapper, { bottom: Math.max(tabBarHeight + 10, 12) }]}>
       <View style={styles.bar}>
-        <TouchableOpacity
-          activeOpacity={0.82}
-          onPress={onEditInputs}
-          disabled={loading}
-          style={styles.editAction}
-        >
-          <Text style={styles.editActionText}>Edit Inputs</Text>
-        </TouchableOpacity>
+        <View style={styles.editRow}>
+          <Text style={styles.helperLabel}>Want a different direction?</Text>
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={onEditInputs}
+            disabled={loading}
+            style={styles.editAction}
+          >
+            <Text style={styles.editActionText}>Edit Inputs</Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.actionsRow}>
           <TouchableOpacity
@@ -61,59 +64,79 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
+    paddingHorizontal: spacing.lg,
   },
   bar: {
-    paddingTop: 12,
-    paddingHorizontal: spacing.lg,
-    paddingBottom: 10,
-    backgroundColor: 'rgba(247, 244, 239, 0.98)',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingTop: 14,
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    backgroundColor: 'rgba(250, 250, 255, 0.96)',
     borderTopWidth: 1,
-    borderTopColor: '#daddd8',
+    borderTopColor: colors.border,
+    ...shadows.card,
+  },
+  editRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 12,
+  },
+  helperLabel: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.textMuted,
+    fontWeight: '600',
+    fontFamily: typography.fontFamily,
   },
   editAction: {
-    alignSelf: 'center',
-    minHeight: 28,
+    minHeight: 34,
+    borderRadius: radii.pill,
     justifyContent: 'center',
+    alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 4,
-    marginBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#daddd8',
+    backgroundColor: colors.surfaceContainer,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   editActionText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(28, 28, 28, 0.72)',
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: colors.textSecondary,
     letterSpacing: 0.2,
     fontFamily: typography.fontFamily,
   },
   actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
   },
   secondaryButton: {
     flex: 1,
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: '#fafaff',
+    minHeight: 52,
+    borderRadius: 16,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: '#daddd8',
+    borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 8,
     paddingHorizontal: 14,
   },
   secondaryButtonText: {
-    color: 'rgba(28, 28, 28, 0.72)',
-    fontSize: 13.5,
+    color: colors.textSecondary,
+    fontSize: 13,
     fontWeight: '700',
     fontFamily: typography.fontFamily,
   },
   primaryButton: {
     flex: 1,
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: '#211d1a',
+    minHeight: 52,
+    borderRadius: 16,
+    backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 14,

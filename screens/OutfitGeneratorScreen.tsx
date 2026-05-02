@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   LayoutAnimation,
   Platform,
@@ -12,41 +13,68 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
+import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { apiPost } from '../lib/api';
+import SaveGeneratedOutfitModal from '../components/OutfitGenerator/SaveGeneratedOutfitModal';
+import CreateTravelCollectionModal from '../components/SavedOutfits/CreateTravelCollectionModal';
+import UpgradeLimitModal from '../components/subscriptions/UpgradeLimitModal';
+import { useUpgradeWall } from '../hooks/useUpgradeWall';
+import { apiPostWithRateLimitRetry, isRateLimitedResponse } from '../lib/api';
+import { isSubscriptionLimitError } from '../lib/subscriptions/errors';
+import { buildUpgradeModalState, HIDDEN_UPGRADE_MODAL_STATE } from '../lib/subscriptions/modalState';
+import { canUseFeature, incrementUsage } from '../lib/subscriptions/usageService';
 import { toStyleRequestWardrobeList } from '../lib/styleRequestWardrobe';
+import { fetchStyleContextSignals } from '../lib/styleProfile';
 import { supabase } from '../lib/supabase';
 import { colors, spacing, typography } from '../lib/theme';
 import FloatingGeneratorActions from '../components/OutfitGenerator/FloatingGeneratorActions';
-import GeneratorSummaryCard from '../components/OutfitGenerator/GeneratorSummaryCard';
 import QuickPickChips from '../components/OutfitGenerator/QuickPickChips';
 import SeasonSelector from '../components/OutfitGenerator/SeasonSelector';
-import StyledLookItemCard from '../components/OutfitGenerator/StyledLookItemCard';
 import StylistBriefHeader from '../components/OutfitGenerator/StylistBriefHeader';
 import TemperatureInputCard from '../components/OutfitGenerator/TemperatureInputCard';
+import OutfitCanvas from '../components/OutfitCanvas/OutfitCanvas';
+import OutfitSummaryCard from '../components/OutfitCanvas/OutfitSummaryCard';
+import WhyItWorksPanel from '../components/OutfitCanvas/WhyItWorksPanel';
 import {
   buildFateContext,
   type FateContext,
 } from '../utils/buildFateContext';
 import { saveMixedOutfit } from '../services/savedOutfitService';
+import { createTravelCollection, fetchTravelCollections } from '../services/travelCollectionsService';
 import { normalizeSavedOutfitLikeItem } from '../utils/styleCanvasAdapters';
+import { useOptionalBottomTabBarHeight } from '../lib/useOptionalBottomTabBarHeight';
+import type { TravelCollectionDraft } from '../types/travelCollections';
+import { buildOutfitCanvasItems, buildOutfitCanvasReasons } from '../components/OutfitCanvas/utils';
 
-const DISPLAY_ORDER = ['outerwear', 'layer', 'onepiece', 'top', 'bottom', 'shoes', 'accessory'];
+const DISPLAY_ORDER = ['outerwear', 'base_top', 'top_layer', 'onepiece', 'bottom', 'shoes', 'accessory'];
 const VALID_SEASONS = ['spring', 'summer', 'fall', 'winter', 'all'];
 const VIBE_OPTIONS = ['Casual', 'Elevated', 'Clean', 'Streetwear', 'Confident', 'Date Night'];
-const CONTEXT_OPTIONS = ['Everyday', 'Dinner', 'Going Out', 'Work', 'Travel', 'Weekend'];
-const PROFILE_PREF_SELECT_FIELDS = 'style_tags, color_prefs, fit_prefs';
-const PROFILE_PREF_FALLBACK_SELECT_FIELDS = 'style_tags';
-const STYLE_PROFILE_SELECT_FIELDS =
-  'primary_vibes, silhouettes, seasons, core_colors, accent_colors, fit_prefs, keywords, preferred_occasions, preferred_formality';
 const FATE_WARDROBE_SELECT_FIELDS =
-  'id, name, type, main_category, primary_color, secondary_colors, vibe_tags, season, pattern_description, fit_type, silhouette, formality, occasion_tags';
+  'id, name, type, main_category, subcategory, primary_color, secondary_colors, vibe_tags, season, pattern_description, fit_type, silhouette, formality, occasion_tags, layering_role, garment_function, style_role, material_guess, weather_use, fit_notes, cutout_image_url, cutout_thumbnail_url, cutout_display_url';
+const FATE_WARDROBE_MEDIA_FALLBACK_SELECT_FIELDS =
+  'id, name, type, main_category, subcategory, primary_color, secondary_colors, vibe_tags, season, pattern_description, cutout_image_url, cutout_thumbnail_url, cutout_display_url';
 const FATE_WARDROBE_FALLBACK_SELECT_FIELDS =
   'id, name, type, main_category, primary_color, secondary_colors, vibe_tags, season, pattern_description';
+const GENERATOR_WARDROBE_SELECT_FIELDS =
+  'id, user_id, name, type, main_category, subcategory, image_url, image_path, thumbnail_url, display_image_url, cutout_image_url, cutout_thumbnail_url, cutout_display_url, primary_color, secondary_colors, pattern_description, vibe_tags, season, layering_role, garment_function, style_role, material_guess, weather_use, fit_notes, meta';
+const GENERATOR_WARDROBE_MEDIA_FALLBACK_SELECT_FIELDS =
+  'id, user_id, name, type, main_category, subcategory, image_url, image_path, cutout_image_url, cutout_thumbnail_url, cutout_display_url, primary_color, secondary_colors, pattern_description, vibe_tags, season, meta';
+const GENERATOR_WARDROBE_FALLBACK_SELECT_FIELDS =
+  'id, user_id, name, type, main_category, image_url, image_path, primary_color, secondary_colors, pattern_description, vibe_tags, season, meta';
+
+type GeneratorRouteParams = {
+  initialMode?: 'regular' | 'travel';
+  initialTravelCollectionId?: string;
+  initialActivityLabel?: string;
+  prefillNonce?: string | number;
+};
 
 function animateTransition() {
   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isMissingColumnError(error: any, field: string) {
@@ -61,6 +89,76 @@ function isMissingColumnError(error: any, field: string) {
     normalized.includes(`'${target}' column`) ||
     (normalized.includes('does not exist') && normalized.includes(target))
   );
+}
+
+function isMissingWardrobeEnhancementError(error: any) {
+  return [
+    'subcategory',
+    'fit_type',
+    'silhouette',
+    'occasion_tags',
+    'formality',
+    'layering_role',
+    'garment_function',
+    'style_role',
+    'material_guess',
+    'weather_use',
+    'fit_notes',
+    'cutout_image_url',
+    'cutout_thumbnail_url',
+    'cutout_display_url',
+  ].some((field) => isMissingColumnError(error, field));
+}
+
+function getDisplayRole(item: any) {
+  const explicitRole = String(item?.outfit_role || '').trim().toLowerCase();
+  if (DISPLAY_ORDER.includes(explicitRole)) return explicitRole;
+
+  const category = String(item?.main_category || '').trim().toLowerCase();
+  if (category === 'top') return 'base_top';
+  return category;
+}
+
+function formatSeasonValue(value: string) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return 'Any season';
+  if (normalized.toLowerCase() === 'all') return 'Any season';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function buildRefineSummary(season: string, temperature: string) {
+  return [formatSeasonValue(season), temperature ? `${temperature}°F` : null]
+    .filter(Boolean)
+    .join(' • ');
+}
+
+function buildSavedContextSummary(prompt: string, selectedVibeChip: string, season: string, temperature: string) {
+  const brief = [selectedVibeChip, prompt].filter(Boolean).join(' • ') || 'Generated look';
+  const weather = [temperature ? `${temperature}°F` : null, season ? formatSeasonValue(season) : null]
+    .filter(Boolean)
+    .join(' ');
+
+  return weather ? `${brief} in ${weather}` : brief;
+}
+
+function formatGeneratorErrorMessage(message?: string | null) {
+  const normalized = String(message || '').trim();
+  if (!normalized) {
+    return 'Generation failed. Please try again.';
+  }
+
+  const lowered = normalized.toLowerCase();
+  if (
+    lowered.includes('too many requests') ||
+    lowered.includes('rate limit') ||
+    lowered.includes('rate-limit') ||
+    lowered.includes('rate limited') ||
+    lowered.includes('rate-limited')
+  ) {
+    return 'Generation is temporarily rate-limited. Please wait a moment and try again.';
+  }
+
+  return normalized;
 }
 
 function InputSection({
@@ -105,25 +203,49 @@ function LoadingCard({
 }
 
 export default function OutfitGeneratorScreen() {
-  const tabBarHeight = useBottomTabBarHeight();
+  const tabBarHeight = useOptionalBottomTabBarHeight();
+  const isFocused = useIsFocused();
+  const navigation = useNavigation<any>();
+  const route = useRoute();
+  const routeParams = ((route as any)?.params || {}) as GeneratorRouteParams;
+  const lastAppliedPrefillRef = useRef('');
+  const saveNameRequestRef = useRef(0);
+  const saveNameDirtyRef = useRef(false);
 
   const [userId, setUserId] = useState<string | null>(null);
-  const [vibe, setVibe] = useState('');
-  const [context, setContext] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [selectedVibeChip, setSelectedVibeChip] = useState('');
   const [season, setSeason] = useState('');
   const [temperature, setTemperature] = useState('');
+  const [refineOpen, setRefineOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [outfit, setOutfit] = useState<any[]>([]);
   const [lockedItems, setLockedItems] = useState<any[]>([]);
+  const [activeReasonItemId, setActiveReasonItemId] = useState<string | null>(null);
   const [mode, setMode] = useState<'form' | 'generated'>('form');
   const [currentStep, setCurrentStep] = useState('');
   const [recentGenerationHistory, setRecentGenerationHistory] = useState<string[][]>([]);
   const [surpriseLoading, setSurpriseLoading] = useState(false);
-  const [fatePreview, setFatePreview] = useState<FateContext | null>(null);
   const [cachedFateContext, setCachedFateContext] = useState<FateContext | null>(null);
   const [fateVariantIndex, setFateVariantIndex] = useState(0);
   const [recentFateKeys, setRecentFateKeys] = useState<string[]>([]);
+  const [savePrefillMode, setSavePrefillMode] = useState<'regular' | 'travel'>('regular');
+  const [savePrefillTravelCollectionId, setSavePrefillTravelCollectionId] = useState('');
+  const [savePrefillActivityLabel, setSavePrefillActivityLabel] = useState('');
+  const [travelCollections, setTravelCollections] = useState<any[]>([]);
+  const [travelCollectionsLoading, setTravelCollectionsLoading] = useState(false);
+  const [travelCollectionModalVisible, setTravelCollectionModalVisible] = useState(false);
+  const [creatingTravelCollection, setCreatingTravelCollection] = useState(false);
+  const [saveSheetVisible, setSaveSheetVisible] = useState(false);
+  const [saveSheetMode, setSaveSheetMode] = useState<'regular' | 'travel'>('regular');
+  const [saveSheetName, setSaveSheetName] = useState('Untitled Fit');
+  const [saveSheetNameLoading, setSaveSheetNameLoading] = useState(false);
+  const [saveSheetTravelCollectionId, setSaveSheetTravelCollectionId] = useState('');
+  const [saveSheetActivityLabel, setSaveSheetActivityLabel] = useState('');
+  const [saveSheetDayLabel, setSaveSheetDayLabel] = useState('');
+  const [upgradeModal, setUpgradeModal] = useState(HIDDEN_UPGRADE_MODAL_STATE);
+  const { isPaywallAvailable, openTryOnPack, openUpgrade } = useUpgradeWall();
 
   const finalSeason = VALID_SEASONS.includes(season.toLowerCase())
     ? season.toLowerCase()
@@ -149,7 +271,7 @@ export default function OutfitGeneratorScreen() {
 
   useEffect(() => {
     setRecentGenerationHistory([]);
-  }, [context, vibe, season, temperature]);
+  }, [prompt, selectedVibeChip, season, temperature]);
 
   const getRecentGeneratedIds = () =>
     Array.from(new Set(recentGenerationHistory.flat().filter(Boolean)));
@@ -164,57 +286,83 @@ export default function OutfitGeneratorScreen() {
     return data.user.id;
   }, [userId]);
 
-  const fetchFateSignals = useCallback(async (uid: string) => {
-    let profileResponse: any = await supabase
-      .from('profiles')
-      .select(PROFILE_PREF_SELECT_FIELDS)
-      .eq('id', uid)
-      .maybeSingle();
+  const loadTravelCollectionOptions = useCallback(
+    async (uidArg?: string | null) => {
+      try {
+        setTravelCollectionsLoading(true);
+        const uid = uidArg || (await resolveCurrentUserId());
+        const collections = await fetchTravelCollections(uid);
+        setTravelCollections(collections);
+      } catch (error: any) {
+        console.error('Failed to load travel collections:', error?.message || error);
+      } finally {
+        setTravelCollectionsLoading(false);
+      }
+    },
+    [resolveCurrentUserId],
+  );
 
-    if (
-      profileResponse.error &&
-      (isMissingColumnError(profileResponse.error, 'color_prefs') ||
-        isMissingColumnError(profileResponse.error, 'fit_prefs'))
-    ) {
-      profileResponse = await supabase
-        .from('profiles')
-        .select(PROFILE_PREF_FALLBACK_SELECT_FIELDS)
-        .eq('id', uid)
-        .maybeSingle();
-    }
+  useEffect(() => {
+    if (!isFocused) return;
+    if (!savePrefillTravelCollectionId && !saveSheetVisible && !travelCollectionModalVisible) return;
+    void loadTravelCollectionOptions();
+  }, [isFocused, loadTravelCollectionOptions, savePrefillTravelCollectionId, saveSheetVisible, travelCollectionModalVisible]);
 
-    if (profileResponse.error && profileResponse.error.code !== 'PGRST116') {
-      throw profileResponse.error;
-    }
+  useEffect(() => {
+    const nextPrefillKey = String(routeParams?.prefillNonce || '').trim();
+    if (!nextPrefillKey || lastAppliedPrefillRef.current === nextPrefillKey) return;
 
-    let styleProfileResponse: any = await supabase
-      .from('user_style_profiles')
-      .select(STYLE_PROFILE_SELECT_FIELDS)
-      .eq('user_id', uid)
-      .maybeSingle();
+    lastAppliedPrefillRef.current = nextPrefillKey;
+    const nextTravelCollectionId = String(routeParams.initialTravelCollectionId || '').trim();
 
-    if (
-      styleProfileResponse.error &&
+    setSavePrefillMode(routeParams.initialMode === 'travel' || nextTravelCollectionId ? 'travel' : 'regular');
+    setSavePrefillTravelCollectionId(nextTravelCollectionId);
+    setSavePrefillActivityLabel(typeof routeParams.initialActivityLabel === 'string' ? routeParams.initialActivityLabel : '');
+  }, [routeParams]);
+
+  const tripContextCollection = useMemo(
+    () => travelCollections.find((collection) => String(collection?.id || '') === savePrefillTravelCollectionId) || null,
+    [savePrefillTravelCollectionId, travelCollections],
+  );
+
+  const saveSheetSelectedTravelCollection = useMemo(
+    () => travelCollections.find((collection) => String(collection?.id || '') === saveSheetTravelCollectionId) || null,
+    [saveSheetTravelCollectionId, travelCollections],
+  );
+
+  const lockedItemIds = useMemo(
+    () => lockedItems.map((item) => String(item?.id || '').trim()).filter(Boolean),
+    [lockedItems],
+  );
+
+  const generatedCanvasItems = useMemo(
+    () => buildOutfitCanvasItems(outfit, { lockedIds: lockedItemIds }),
+    [lockedItemIds, outfit],
+  );
+
+  const generatedReasonItems = useMemo(
+    () => buildOutfitCanvasReasons(generatedCanvasItems),
+    [generatedCanvasItems],
+  );
+
+  const generatedSummaryText = useMemo(() => {
+    const brief = buildSavedContextSummary(prompt, selectedVibeChip, season, temperature);
+    return brief || 'A closet-built look balanced around your current brief.';
+  }, [prompt, season, selectedVibeChip, temperature]);
+
+  const generatedSummaryChips = useMemo(
+    () =>
       [
-        'preferred_occasions',
-        'preferred_formality',
-        'core_colors',
-        'accent_colors',
-        'silhouettes',
-        'fit_prefs',
-      ].some((field) => isMissingColumnError(styleProfileResponse.error, field))
-    ) {
-      styleProfileResponse = { data: null, error: null };
-    }
+        selectedVibeChip || null,
+        season ? formatSeasonValue(season) : null,
+        temperature ? `${temperature}°F` : null,
+        generatedCanvasItems.length ? `${generatedCanvasItems.length} pieces` : null,
+      ].filter(Boolean) as string[],
+    [generatedCanvasItems.length, season, selectedVibeChip, temperature],
+  );
 
-    if (styleProfileResponse.error && styleProfileResponse.error.code !== 'PGRST116') {
-      throw styleProfileResponse.error;
-    }
-
-    return {
-      profile: profileResponse.data || null,
-      preferences: styleProfileResponse.data || null,
-    };
+  const fetchFateSignals = useCallback(async (uid: string) => {
+    return await fetchStyleContextSignals(uid);
   }, []);
 
   const fetchWardrobeForFate = useCallback(async (uid: string) => {
@@ -224,12 +372,15 @@ export default function OutfitGeneratorScreen() {
       .eq('user_id', uid)
       .eq('wardrobe_status', 'owned');
 
-    if (
-      wardrobeResponse.error &&
-      ['fit_type', 'silhouette', 'occasion_tags', 'formality'].some((field) =>
-        isMissingColumnError(wardrobeResponse.error, field)
-      )
-    ) {
+    if (wardrobeResponse.error && isMissingWardrobeEnhancementError(wardrobeResponse.error)) {
+      wardrobeResponse = await supabase
+        .from('wardrobe')
+        .select(FATE_WARDROBE_MEDIA_FALLBACK_SELECT_FIELDS)
+        .eq('user_id', uid)
+        .eq('wardrobe_status', 'owned');
+    }
+
+    if (wardrobeResponse.error && isMissingColumnError(wardrobeResponse.error, 'cutout_image_url')) {
       wardrobeResponse = await supabase
         .from('wardrobe')
         .select(FATE_WARDROBE_FALLBACK_SELECT_FIELDS)
@@ -249,18 +400,34 @@ export default function OutfitGeneratorScreen() {
     const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
     if (!uniqueIds.length) return [];
 
-    const { data, error } = await supabase
+    let response: any = await supabase
       .from('wardrobe')
-      .select('id, user_id, name, type, main_category, image_url, image_path, primary_color, secondary_colors, pattern_description, vibe_tags, season, meta')
+      .select(GENERATOR_WARDROBE_SELECT_FIELDS)
       .eq('user_id', userId)
       .in('id', uniqueIds);
 
-    if (error) {
-      console.error('Error fetching wardrobe items:', error.message);
+    if (response.error && isMissingWardrobeEnhancementError(response.error)) {
+      response = await supabase
+        .from('wardrobe')
+        .select(GENERATOR_WARDROBE_MEDIA_FALLBACK_SELECT_FIELDS)
+        .eq('user_id', userId)
+        .in('id', uniqueIds);
+    }
+
+    if (response.error && isMissingColumnError(response.error, 'cutout_image_url')) {
+      response = await supabase
+        .from('wardrobe')
+        .select(GENERATOR_WARDROBE_FALLBACK_SELECT_FIELDS)
+        .eq('user_id', userId)
+        .in('id', uniqueIds);
+    }
+
+    if (response.error) {
+      console.error('Error fetching wardrobe items:', response.error.message);
       return [];
     }
 
-    return data ?? [];
+    return response.data ?? [];
   };
 
   const toggleLockItem = (item: any) => {
@@ -271,11 +438,59 @@ export default function OutfitGeneratorScreen() {
     );
   };
 
-  const generateMultistepOutfit = async () => {
+  const handleCreateTravelCollection = useCallback(
+    async (draft: TravelCollectionDraft) => {
+      try {
+        setCreatingTravelCollection(true);
+        const uid = await resolveCurrentUserId();
+        const organizationAccess = await canUseFeature(uid, 'premium_organization');
+        if (!organizationAccess.allowed) {
+          setUpgradeModal(buildUpgradeModalState('premium_organization', organizationAccess));
+          return;
+        }
+        const created = await createTravelCollection({
+          userId: uid,
+          draft,
+        });
+        setTravelCollections((previous) => [created, ...previous]);
+        setSaveSheetMode('travel');
+        setSaveSheetTravelCollectionId(String(created.id));
+        setTravelCollectionModalVisible(false);
+      } catch (error: any) {
+        if (isSubscriptionLimitError(error)) {
+          setUpgradeModal(buildUpgradeModalState(error.featureName, error.accessResult));
+          return;
+        }
+        console.error('Create travel collection failed:', error?.message || error);
+        Alert.alert('Create Trip Failed', error?.message || 'Could not create this trip.');
+      } finally {
+        setCreatingTravelCollection(false);
+      }
+    },
+    [resolveCurrentUserId],
+  );
+
+  const generateMultistepOutfit = async (overrides?: {
+    prompt?: string;
+    selectedVibeChip?: string;
+    season?: string;
+    temperature?: string;
+  }) => {
     if (!userId) {
       Alert.alert('Authentication Required', 'Please log in to generate outfits.');
       return;
     }
+
+    const generationAccess = await canUseFeature(userId, 'outfit_generation');
+    if (!generationAccess.allowed) {
+      setUpgradeModal(buildUpgradeModalState('outfit_generation', generationAccess));
+      return;
+    }
+
+    const requestPrompt = String(overrides?.prompt ?? prompt ?? '');
+    const requestVibe = String(overrides?.selectedVibeChip ?? selectedVibeChip ?? '');
+    const requestSeason = String(overrides?.season ?? season ?? '');
+    const requestTemperature = String(overrides?.temperature ?? temperature ?? '');
 
     setLoading(true);
     setCurrentStep('Generating outfit...');
@@ -294,28 +509,24 @@ export default function OutfitGeneratorScreen() {
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
 
-      const response = await apiPost('/generate-multistep-outfit', {
-        context,
-        vibe,
-        season,
-        temperature: String(temperature || '').trim() ? Number(temperature) : null,
+      const { response: resolvedResponse, data } = await apiPostWithRateLimitRetry('/generate-multistep-outfit', {
+        context: requestPrompt,
+        vibe: requestVibe,
+        season: requestSeason,
+        temperature: String(requestTemperature || '').trim() ? Number(requestTemperature) : null,
         recent_item_ids: getRecentGeneratedIds(),
         avoidIds: outfit?.map((item: any) => item.id) || [],
         locked_items: toStyleRequestWardrobeList(lockedItems),
+      }, {
+        maxAttempts: 3,
+        fallbackMs: 1500,
+        onRetry: ({ attempt, maxAttempts }) => {
+          setCurrentStep(`Server busy, retrying... (${attempt + 1}/${maxAttempts})`);
+        },
       });
 
-      const raw = await response.text();
-
-      if (!response.ok) {
-        Alert.alert('Generation Failed', raw.slice(0, 200));
-        return;
-      }
-
-      let data: any;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        Alert.alert('Generation Failed', 'Backend returned a non-JSON response.');
+      if (!resolvedResponse.ok) {
+        Alert.alert('Generation Failed', formatGeneratorErrorMessage(data?.error || data?.rawText));
         return;
       }
 
@@ -324,27 +535,40 @@ export default function OutfitGeneratorScreen() {
         return;
       }
 
-      const requestedIds = Object.values(data.steps)
-        .filter((step: any) => step && step.id)
-        .map((step: any) => step.id);
+      const resolvedSteps = Object.entries(data.steps || {})
+        .map(([role, step]: [string, any]) => ({
+          ...step,
+          outfit_role: step?.outfit_role || role,
+        }))
+        .filter((step: any) => step && step.id);
+      const requestedIds = resolvedSteps.map((step: any) => step.id);
       const wardrobe = await fetchWardrobeItemsByIds(requestedIds);
       const wardrobeById = new Map(wardrobe.map((item: any) => [item.id, item]));
-      const matched = Object.values(data.steps)
-        .filter((step: any) => step && step.id)
+      const matched = resolvedSteps
         .map((step: any) => {
-          const match = wardrobeById.get(step.id);
-          return match ? { ...match, reason: step.reason } : null;
+          const match = wardrobeById.get(step.id) as Record<string, any> | undefined;
+          return match
+            ? {
+                ...match,
+                reason: step.reason,
+                outfit_role: step.outfit_role || null,
+              }
+            : null;
         })
         .filter(Boolean);
 
       const sorted = matched.sort(
-        (a, b) => DISPLAY_ORDER.indexOf(a.main_category) - DISPLAY_ORDER.indexOf(b.main_category)
+        (a, b) => DISPLAY_ORDER.indexOf(getDisplayRole(a)) - DISPLAY_ORDER.indexOf(getDisplayRole(b))
       );
 
       animateTransition();
       setOutfit(sorted);
+      setActiveReasonItemId(null);
       setRecentGenerationHistory((prev) => [...prev.slice(-2), sorted.map((item: any) => item.id)]);
       setMode('generated');
+      await incrementUsage(userId, 'outfit_generation').catch((error: any) => {
+        console.warn('Outfit generation usage increment failed:', error?.message || error);
+      });
     } catch (err: any) {
       console.error('Generate outfit failed:', err?.message || err);
       Alert.alert('Generation Failed', err?.message || String(err));
@@ -355,47 +579,145 @@ export default function OutfitGeneratorScreen() {
   };
 
   const generateOutfitName = async () => {
-    const response = await apiPost('/generate-outfit-name', {
-      vibe,
-      context,
-      season,
-      temperature,
-      items: outfit.map((item) => item.name || item.type),
+    const resolvedItems = outfit
+      .map((item) =>
+        String(item?.name || item?.type || item?.main_category || item?.subcategory || '')
+          .trim()
+      )
+      .filter(Boolean);
+    const requestPayload = {
+      vibe: String(selectedVibeChip || '').trim() || 'Styled',
+      context: buildSavedContextSummary(prompt, selectedVibeChip, season, temperature),
+      season: season || finalSeason,
+      temperature: String(temperature || '').trim() ? Number(temperature) : null,
+      items: resolvedItems.length ? resolvedItems : ['closet outfit'],
+    };
+
+    const { response, data: json } = await apiPostWithRateLimitRetry('/generate-outfit-name', requestPayload, {
+      maxAttempts: 3,
+      fallbackMs: 1500,
     });
-    const json = await response.json();
+
+    if (!response.ok) {
+      throw new Error(formatGeneratorErrorMessage(json?.error || json?.rawText));
+    }
+
     return json.name || 'Untitled Fit';
   };
 
+  const closeSaveSheet = useCallback(() => {
+    saveNameRequestRef.current += 1;
+    saveNameDirtyRef.current = false;
+    setSaveSheetVisible(false);
+    setSaveSheetNameLoading(false);
+  }, []);
+
+  const openSaveSheet = useCallback(async () => {
+    if (!outfit.length) return;
+
+    const defaultMode = savePrefillMode === 'travel' || savePrefillTravelCollectionId ? 'travel' : 'regular';
+    saveNameDirtyRef.current = false;
+    setSaveSheetMode(defaultMode);
+    setSaveSheetName('Untitled Fit');
+    setSaveSheetTravelCollectionId(savePrefillTravelCollectionId);
+    setSaveSheetActivityLabel(savePrefillActivityLabel);
+    setSaveSheetDayLabel('');
+    setSaveSheetVisible(true);
+    setSaveSheetNameLoading(true);
+
+    if (defaultMode === 'travel' || savePrefillTravelCollectionId) {
+      void loadTravelCollectionOptions();
+    }
+
+    const requestId = saveNameRequestRef.current + 1;
+    saveNameRequestRef.current = requestId;
+
+    try {
+      const nextName = await generateOutfitName();
+      if (saveNameRequestRef.current !== requestId || saveNameDirtyRef.current) return;
+      setSaveSheetName(String(nextName || 'Untitled Fit').trim() || 'Untitled Fit');
+    } catch (error: any) {
+      console.error('Generate outfit name failed:', error?.message || error);
+      if (saveNameRequestRef.current !== requestId || saveNameDirtyRef.current) return;
+      setSaveSheetName('Untitled Fit');
+    } finally {
+      if (saveNameRequestRef.current === requestId) {
+        setSaveSheetNameLoading(false);
+      }
+    }
+  }, [loadTravelCollectionOptions, outfit.length, prompt, savePrefillActivityLabel, savePrefillMode, savePrefillTravelCollectionId, season, selectedVibeChip, temperature]);
+
   const saveOutfit = async () => {
     if (!userId || outfit.length === 0) return;
-    const name = await generateOutfitName();
+    if (saveSheetMode === 'travel' && !saveSheetTravelCollectionId) {
+      Alert.alert('Choose a Trip', 'Select a travel collection before saving this outfit.');
+      return;
+    }
+
+    const saveAccess = await canUseFeature(userId, 'saved_outfit');
+    if (!saveAccess.allowed) {
+      setUpgradeModal(buildUpgradeModalState('saved_outfit', saveAccess));
+      return;
+    }
+
+    if (saveSheetMode === 'travel') {
+      const organizationAccess = await canUseFeature(userId, 'premium_organization');
+      if (!organizationAccess.allowed) {
+        setUpgradeModal(buildUpgradeModalState('premium_organization', organizationAccess));
+        return;
+      }
+    }
+
+    const resolvedName = String(saveSheetName || '').trim() || 'Untitled Fit';
 
     try {
       await saveMixedOutfit({
         userId,
-        name,
-        context: `${vibe} + ${context} in ${temperature}°F ${season} weather`,
+        name: resolvedName,
+        context: buildSavedContextSummary(prompt, selectedVibeChip, season, temperature),
         season: finalSeason,
-        items: outfit.map((item) =>
+        items: generatedCanvasItems.map((item) =>
           normalizeSavedOutfitLikeItem({
             ...item,
             source_type: 'wardrobe',
-            source_item_id: item.id || null,
+            source_item_id: item.source_item_id || item.id || null,
             reason: item.reason,
+            locked: item.locked,
+            layout: item.layout,
+            outfit_role: item.outfit_role || getDisplayRole(item),
           }),
         ),
         sourceKind: 'generated',
+        travelCollectionId: saveSheetMode === 'travel' ? saveSheetTravelCollectionId : null,
+        activityLabel: saveSheetMode === 'travel' ? saveSheetActivityLabel : null,
+        dayLabel: saveSheetMode === 'travel' ? saveSheetDayLabel : null,
+        outfitMode: saveSheetMode,
       });
     } catch (error: any) {
+      if (isSubscriptionLimitError(error)) {
+        setUpgradeModal(buildUpgradeModalState(error.featureName, error.accessResult));
+        return;
+      }
       console.error(error?.message || error);
-      Alert.alert('Save Failed', 'Your outfit could not be saved.');
+      Alert.alert('Save Failed', error?.message || 'Your outfit could not be saved.');
       return;
     }
 
-    Alert.alert('Saved', `Outfit saved as "${name}".`);
+    closeSaveSheet();
+    Alert.alert(
+      'Saved',
+      saveSheetMode === 'travel' && saveSheetSelectedTravelCollection
+        ? `Outfit saved to "${saveSheetSelectedTravelCollection.name}" as "${resolvedName}".`
+        : `Outfit saved as "${resolvedName}".`,
+    );
   };
 
   const handleSaveOutfit = async () => {
+    if (saving) return;
+    await openSaveSheet();
+  };
+
+  const handleConfirmSaveOutfit = async () => {
     if (saving) return;
     setSaving(true);
     try {
@@ -431,16 +753,22 @@ export default function OutfitGeneratorScreen() {
         },
       });
 
-      setVibe(nextFateContext.vibe);
-      setContext(nextFateContext.context);
+      setSelectedVibeChip(nextFateContext.vibe);
+      setPrompt(nextFateContext.context);
       setSeason(nextFateContext.season);
       setTemperature(nextFateContext.temperature);
-      setFatePreview(nextFateContext);
+      setRefineOpen(Boolean(nextFateContext.season || nextFateContext.temperature));
       setCachedFateContext(nextFateContext);
       setFateVariantIndex(nextVariantIndex);
       if (nextFateContext.debug?.selectedKey) {
         setRecentFateKeys((prev) => [...prev.slice(-3), nextFateContext.debug?.selectedKey!]);
       }
+      await generateMultistepOutfit({
+        prompt: nextFateContext.context,
+        selectedVibeChip: nextFateContext.vibe,
+        season: nextFateContext.season,
+        temperature: nextFateContext.temperature,
+      });
     } catch (error: any) {
       console.error('Fate Surprise failed:', error?.message || error);
       const fallbackContext = cachedFateContext || buildFateContext({
@@ -454,16 +782,22 @@ export default function OutfitGeneratorScreen() {
           avoidKeys: recentFateKeys.slice(-4),
         },
       });
-      setVibe(fallbackContext.vibe);
-      setContext(fallbackContext.context);
+      setSelectedVibeChip(fallbackContext.vibe);
+      setPrompt(fallbackContext.context);
       setSeason(fallbackContext.season);
       setTemperature(fallbackContext.temperature);
-      setFatePreview(fallbackContext);
+      setRefineOpen(Boolean(fallbackContext.season || fallbackContext.temperature));
       setCachedFateContext(fallbackContext);
       setFateVariantIndex(nextVariantIndex);
       if (fallbackContext.debug?.selectedKey) {
         setRecentFateKeys((prev) => [...prev.slice(-3), fallbackContext.debug?.selectedKey!]);
       }
+      await generateMultistepOutfit({
+        prompt: fallbackContext.context,
+        selectedVibeChip: fallbackContext.vibe,
+        season: fallbackContext.season,
+        temperature: fallbackContext.temperature,
+      });
     } finally {
       setSurpriseLoading(false);
     }
@@ -472,6 +806,7 @@ export default function OutfitGeneratorScreen() {
     fateVariantIndex,
     fetchFateSignals,
     fetchWardrobeForFate,
+    generateMultistepOutfit,
     recentFateKeys,
     resolveCurrentUserId,
     season,
@@ -482,9 +817,82 @@ export default function OutfitGeneratorScreen() {
   const formContentBottomPadding = formDockBottom + 118;
   const generatedContentBottomPadding = formDockBottom + 138;
   const isSurpriseBusy = surpriseLoading;
-  const fateSummaryLine = fatePreview
-    ? `Fate picked: ${fatePreview.vibe} for ${fatePreview.context}`
-    : null;
+  const saveSheetModal = (
+    <SaveGeneratedOutfitModal
+      visible={saveSheetVisible}
+      name={saveSheetName}
+      nameLoading={saveSheetNameLoading}
+      saveMode={saveSheetMode}
+      travelCollections={travelCollections}
+      travelCollectionsLoading={travelCollectionsLoading}
+      selectedTravelCollectionId={saveSheetTravelCollectionId}
+      activityLabel={saveSheetActivityLabel}
+      dayLabel={saveSheetDayLabel}
+      generatedOutfit={outfit}
+      submitting={saving}
+      onClose={() => {
+        if (saving) return;
+        closeSaveSheet();
+      }}
+      onConfirm={() => {
+        void handleConfirmSaveOutfit();
+      }}
+      onChangeName={(value) => {
+        saveNameDirtyRef.current = true;
+        setSaveSheetName(value);
+      }}
+      onChangeSaveMode={(value) => {
+        if (value === 'travel') {
+          if (!userId) {
+            Alert.alert('Authentication Required', 'Please log in to use premium organization tools.');
+            return;
+          }
+          void canUseFeature(userId, 'premium_organization')
+            .then((result) => {
+              if (!result.allowed) {
+                setUpgradeModal(buildUpgradeModalState('premium_organization', result));
+                return;
+              }
+              setSaveSheetMode(value);
+              void loadTravelCollectionOptions();
+            })
+            .catch((error: any) => {
+              console.warn('Premium organization gate failed:', error?.message || error);
+            });
+          return;
+        }
+        setSaveSheetMode(value);
+      }}
+      onChangeTravelCollectionId={setSaveSheetTravelCollectionId}
+      onChangeActivityLabel={setSaveSheetActivityLabel}
+      onChangeDayLabel={setSaveSheetDayLabel}
+      onPressCreateTrip={() => {
+        void loadTravelCollectionOptions();
+        setTravelCollectionModalVisible(true);
+      }}
+    />
+  );
+  const travelCollectionModal = (
+    <CreateTravelCollectionModal
+      visible={travelCollectionModalVisible}
+      submitting={creatingTravelCollection}
+      onClose={() => {
+        if (creatingTravelCollection) return;
+        setTravelCollectionModalVisible(false);
+      }}
+      onSubmit={(draft) => {
+        void handleCreateTravelCollection(draft);
+      }}
+    />
+  );
+
+  const handleOpenManualBuilder = useCallback(() => {
+    navigation.navigate('StyleCanvas', {
+      origin: 'outfit_generator',
+      initialTitle: 'Manual Outfit Build',
+      allowedSources: ['closet'],
+    });
+  }, [navigation]);
 
   if (mode === 'form') {
     return (
@@ -496,107 +904,70 @@ export default function OutfitGeneratorScreen() {
           >
             <StylistBriefHeader
               title="Build Your Fit"
-              subtitle="Tell us the vibe and we’ll pull a look from your closet."
+              subtitle="Describe the look you want and we’ll pull it from your closet."
             />
 
-            <View style={styles.formSection}>
-              <InputSection
-                label="Vibe"
-                placeholder="Confident, clean, relaxed, sharp..."
-                value={vibe}
-                onChangeText={setVibe}
-              />
-
-              <QuickPickChips
-                label="Quick picks"
-                options={VIBE_OPTIONS}
-                selectedValue={vibe}
-                onSelect={(value) => setVibe(String(value))}
-              />
-            </View>
-
-            <View style={styles.formSection}>
-              <InputSection
-                label="Context"
-                placeholder="Dinner downtown, weekday office, weekend city walk..."
-                value={context}
-                onChangeText={setContext}
-              />
-
-              <QuickPickChips
-                label="Suggested contexts"
-                options={CONTEXT_OPTIONS}
-                selectedValue={context}
-                onSelect={(value) => setContext(String(value))}
-              />
-            </View>
-
-            <View style={styles.formSectionCompact}>
-              <SeasonSelector value={season} onChange={setSeason} />
-            </View>
-
-            <View style={styles.formSectionCompact}>
-              <TemperatureInputCard value={temperature} onChange={setTemperature} />
-            </View>
-
-            <View style={styles.formSectionCompact}>
-              <View style={styles.surpriseSection}>
-                <View style={styles.surpriseSectionHeader}>
-                  <Text style={styles.surpriseSectionLabel}>Surprise Me</Text>
-                  <Text style={styles.surpriseSectionHelper}>
-                    Fate builds from your style profile, closet patterns, and season context.
+            {savePrefillTravelCollectionId ? (
+              <View style={styles.tripContextCard}>
+                <View style={styles.tripContextIconWrap}>
+                  <Ionicons name="airplane-outline" size={16} color={colors.textPrimary} />
+                </View>
+                <View style={styles.tripContextCopy}>
+                  <Text style={styles.tripContextTitle}>
+                    {tripContextCollection?.name
+                      ? `Saving for ${tripContextCollection.name}`
+                      : 'Travel trip selected'}
+                  </Text>
+                  <Text style={styles.tripContextText}>
+                    {savePrefillActivityLabel
+                      ? `Save Fit will open with ${savePrefillActivityLabel} prefilled.`
+                      : 'Save Fit will open with this trip already selected.'}
                   </Text>
                 </View>
-
-                <View style={styles.surpriseButtonsRow}>
-                  <TouchableOpacity
-                    activeOpacity={0.86}
-                    onPress={() => {
-                      void handleFateSurpriseMe();
-                    }}
-                    disabled={loading || isSurpriseBusy}
-                    style={[
-                      styles.surpriseButton,
-                      styles.fateSurpriseButton,
-                      fatePreview && styles.fateSurpriseButtonActive,
-                      (loading || isSurpriseBusy) && styles.disabledAction,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.fateSurpriseButtonEyebrow,
-                      ]}
-                    >
-                      Curated
-                    </Text>
-                    <Text style={styles.fateSurpriseButtonText}>
-                      {surpriseLoading ? 'Reading your closet...' : 'Fate Surprise Me'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {fatePreview ? (
-                  <View style={styles.fateSummaryCard}>
-                    <Text style={styles.fateSummaryEyebrow}>Fate Direction</Text>
-                    <Text style={styles.fateSummaryTitle}>{fatePreview.vibe}</Text>
-                    <Text style={styles.fateSummaryText}>{fatePreview.context}</Text>
-                    <Text style={styles.fateSummaryMeta}>
-                      {[
-                        fatePreview.season ? `Season: ${fatePreview.season}` : null,
-                        fatePreview.temperature ? `${fatePreview.temperature}°F` : null,
-                        fatePreview.colorDirection?.length
-                          ? `Colors: ${fatePreview.colorDirection.join(', ')}`
-                          : null,
-                      ]
-                        .filter(Boolean)
-                        .join('  ·  ')}
-                    </Text>
-                    <Text style={styles.fateSummaryFootnote}>
-                      Built from your style profile, closet patterns, and season context.
-                    </Text>
-                  </View>
-                ) : null}
               </View>
+            ) : null}
+
+            <View style={styles.formSection}>
+              <InputSection
+                label="Describe the look"
+                placeholder="Confident dinner look, relaxed weekend fit, clean office outfit..."
+                value={prompt}
+                onChangeText={setPrompt}
+              />
+
+              <QuickPickChips
+                label="Style shortcuts"
+                options={VIBE_OPTIONS}
+                selectedValue={selectedVibeChip}
+                onSelect={(value) => setSelectedVibeChip(String(value))}
+                horizontal
+              />
+            </View>
+
+            <View style={styles.formSectionCompact}>
+              <TouchableOpacity
+                activeOpacity={0.88}
+                onPress={() => setRefineOpen((current) => !current)}
+                style={styles.refineToggle}
+              >
+                <View style={styles.refineCopy}>
+                  <Text style={styles.refineLabel}>Refine</Text>
+                  <Text style={styles.refineSummary}>{buildRefineSummary(season, temperature)}</Text>
+                </View>
+                <Ionicons
+                  name={refineOpen ? 'chevron-up-outline' : 'chevron-down-outline'}
+                  size={18}
+                  color={colors.textSecondary}
+                />
+              </TouchableOpacity>
+              {refineOpen ? (
+                <View style={styles.refineContent}>
+                  <SeasonSelector value={season} onChange={setSeason} />
+                  <View style={styles.refineTemperatureWrap}>
+                    <TemperatureInputCard value={temperature} onChange={setTemperature} />
+                  </View>
+                </View>
+              ) : null}
             </View>
 
             {loading && currentStep ? (
@@ -609,23 +980,68 @@ export default function OutfitGeneratorScreen() {
 
           <View pointerEvents="box-none" style={[styles.formActionsWrap, { bottom: formDockBottom }]}>
             <View style={styles.formActionsCard}>
-              <Text style={styles.formActionsEyebrow}>Ready when you are</Text>
-              <TouchableOpacity
-                activeOpacity={0.88}
-                onPress={() => {
-                  void generateMultistepOutfit();
-                }}
-                disabled={loading || isSurpriseBusy}
-                style={[styles.primaryCta, (loading || isSurpriseBusy) && styles.disabledAction]}
-              >
-                <Text style={styles.primaryCtaText}>
-                  {loading ? 'Generating...' : 'Generate Fit'}
-                </Text>
-              </TouchableOpacity>
-              {fateSummaryLine ? <Text style={styles.formActionsSummary}>{fateSummaryLine}</Text> : null}
+              <View style={styles.formActionsStack}>
+                <View style={styles.formActionsRow}>
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    onPress={() => {
+                      void handleFateSurpriseMe();
+                    }}
+                    disabled={loading || isSurpriseBusy}
+                    style={[styles.secondaryCta, styles.secondaryCtaWide, (loading || isSurpriseBusy) && styles.disabledAction]}
+                  >
+                    <Ionicons name="sparkles-outline" size={15} color={colors.textPrimary} />
+                    <Text style={styles.secondaryCtaText}>
+                      {surpriseLoading ? 'Surprising...' : 'Surprise Me'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    onPress={handleOpenManualBuilder}
+                    disabled={loading || isSurpriseBusy}
+                    style={[styles.secondaryCta, styles.secondaryCtaWide, (loading || isSurpriseBusy) && styles.disabledAction]}
+                  >
+                    <Ionicons name="shirt-outline" size={15} color={colors.textPrimary} />
+                    <Text style={styles.secondaryCtaText}>Manual Build</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.88}
+                  onPress={() => {
+                    void generateMultistepOutfit();
+                  }}
+                  disabled={loading || isSurpriseBusy}
+                  style={[styles.primaryCta, (loading || isSurpriseBusy) && styles.disabledAction]}
+                >
+                  <Text style={styles.primaryCtaText}>
+                    {loading ? 'Generating...' : 'Generate Fit'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </View>
+        {saveSheetModal}
+        {travelCollectionModal}
+        <UpgradeLimitModal
+          visible={upgradeModal.visible}
+          featureName={upgradeModal.featureName}
+          used={upgradeModal.used}
+          limit={upgradeModal.limit}
+          remaining={upgradeModal.remaining}
+          tier={upgradeModal.tier}
+          recommendedUpgrade={upgradeModal.recommendedUpgrade}
+          isPaywallAvailable={isPaywallAvailable}
+          onClose={() => setUpgradeModal(HIDDEN_UPGRADE_MODAL_STATE)}
+          onUpgrade={() => {
+            void openUpgrade();
+          }}
+          onBuyTryOnPack={() => {
+            void openTryOnPack();
+          }}
+        />
       </SafeAreaView>
     );
   }
@@ -644,7 +1060,9 @@ export default function OutfitGeneratorScreen() {
           >
             <Ionicons name="chevron-back" size={22} color="rgba(28, 28, 28, 0.72)" />
           </TouchableOpacity>
-          <Text style={styles.generatedHeaderTitle}>Here’s your styled fit</Text>
+          <Text style={styles.generatedHeaderTitle} numberOfLines={1}>
+            Here’s your styled fit
+          </Text>
           <View style={styles.generatedHeaderSpacer} />
         </View>
 
@@ -652,11 +1070,11 @@ export default function OutfitGeneratorScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[styles.generatedScrollContent, { paddingBottom: generatedContentBottomPadding }]}
         >
-          <GeneratorSummaryCard
-            vibe={vibe}
-            context={context}
-            season={season || finalSeason}
-            temperature={temperature}
+          <OutfitSummaryCard
+            eyebrow="Styled for you"
+            title={selectedVibeChip || 'Closet-built look'}
+            summary={generatedSummaryText}
+            chips={generatedSummaryChips}
           />
 
           {loading && currentStep ? (
@@ -667,21 +1085,32 @@ export default function OutfitGeneratorScreen() {
           ) : null}
 
           <View style={styles.resultsSectionHeader}>
-            <Text style={styles.resultsSectionTitle}>Styled look</Text>
+            <Text style={styles.resultsSectionTitle}>Styled board</Text>
             <Text style={styles.resultsSectionText}>
-              Lock any piece you want to keep before generating again.
+              Tap a reason chip to spotlight a piece. Long press any item on the board to lock it before generating again.
             </Text>
           </View>
 
-          {outfit.length ? (
-            outfit.map((item) => (
-              <StyledLookItemCard
-                key={item.id}
-                item={item}
-                locked={lockedItems.some((entry) => entry.id === item.id)}
-                onToggleLock={() => toggleLockItem(item)}
+          {generatedCanvasItems.length ? (
+            <>
+              <OutfitCanvas
+                items={generatedCanvasItems}
+                highlightedItemId={activeReasonItemId}
+                onPressItem={setActiveReasonItemId}
+                onLongPressItem={(itemId) => {
+                  const matchedItem = outfit.find((entry) => String(entry?.id || '') === String(itemId || ''));
+                  if (!matchedItem) return;
+                  toggleLockItem(matchedItem);
+                }}
               />
-            ))
+
+              <WhyItWorksPanel
+                summary={generatedSummaryText}
+                items={generatedReasonItems}
+                activeItemId={activeReasonItemId}
+                onChangeActiveItemId={setActiveReasonItemId}
+              />
+            </>
           ) : (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateTitle}>No look yet</Text>
@@ -708,6 +1137,25 @@ export default function OutfitGeneratorScreen() {
           />
         ) : null}
       </View>
+      {saveSheetModal}
+      {travelCollectionModal}
+      <UpgradeLimitModal
+        visible={upgradeModal.visible}
+        featureName={upgradeModal.featureName}
+        used={upgradeModal.used}
+        limit={upgradeModal.limit}
+        remaining={upgradeModal.remaining}
+        tier={upgradeModal.tier}
+        recommendedUpgrade={upgradeModal.recommendedUpgrade}
+        isPaywallAvailable={isPaywallAvailable}
+        onClose={() => setUpgradeModal(HIDDEN_UPGRADE_MODAL_STATE)}
+        onUpgrade={() => {
+          void openUpgrade();
+        }}
+        onBuyTryOnPack={() => {
+          void openTryOnPack();
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -735,6 +1183,45 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderTopWidth: 1,
     borderTopColor: colors.divider,
+  },
+  tripContextCard: {
+    marginBottom: spacing.md,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceContainerLowest,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  tripContextIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.sm,
+  },
+  tripContextCopy: {
+    flex: 1,
+  },
+  tripContextTitle: {
+    fontSize: 13.5,
+    lineHeight: 18,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    fontFamily: typography.fontFamily,
+  },
+  tripContextText: {
+    marginTop: 4,
+    fontSize: 12.5,
+    lineHeight: 17,
+    color: colors.textSecondary,
+    fontFamily: typography.fontFamily,
   },
   inputSection: {
     marginBottom: 2,
@@ -798,21 +1285,40 @@ const styles = StyleSheet.create({
     right: 0,
   },
   formActionsCard: {
-    paddingTop: 12,
+    paddingTop: 10,
     paddingHorizontal: spacing.lg,
     paddingBottom: 12,
     backgroundColor: 'rgba(250, 250, 255, 0.96)',
     borderTopWidth: 1,
     borderTopColor: colors.divider,
   },
-  formActionsEyebrow: {
-    alignSelf: 'center',
-    marginBottom: 10,
-    fontSize: 10.5,
+  formActionsStack: {
+    gap: 10,
+  },
+  formActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  secondaryCta: {
+    minHeight: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceContainerLowest,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    paddingHorizontal: 14,
+    gap: 8,
+  },
+  secondaryCtaWide: {
+    flex: 1,
+  },
+  secondaryCtaText: {
+    color: colors.textPrimary,
+    fontSize: 13.5,
     fontWeight: '700',
-    letterSpacing: 1.05,
-    textTransform: 'uppercase',
-    color: colors.textMuted,
     fontFamily: typography.fontFamily,
   },
   primaryCta: {
@@ -829,133 +1335,60 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
     fontFamily: typography.fontFamily,
   },
-  formActionsSummary: {
-    marginTop: 9,
-    textAlign: 'center',
-    fontSize: 12.5,
-    lineHeight: 17,
-    color: colors.textMuted,
-    fontFamily: typography.fontFamily,
-  },
   disabledAction: {
     opacity: 0.65,
   },
-  surpriseSection: {
-    gap: 12,
-  },
-  surpriseSectionHeader: {
-    gap: 6,
-  },
-  surpriseSectionLabel: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    letterSpacing: 1.1,
-    textTransform: 'uppercase',
-    color: colors.textMuted,
-    fontFamily: typography.fontFamily,
-  },
-  surpriseSectionHelper: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
-  },
-  surpriseButtonsRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  surpriseButton: {
-    flex: 1,
-    minHeight: 58,
-    borderRadius: 14,
-    borderWidth: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  fateSurpriseButton: {
-    backgroundColor: colors.surfaceContainer,
-    borderColor: colors.border,
-  },
-  fateSurpriseButtonActive: {
-    borderColor: colors.accent,
-    backgroundColor: colors.surfaceContainerLowest,
-  },
-  fateSurpriseButtonEyebrow: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    color: colors.textMuted,
-    marginBottom: 4,
-    fontFamily: typography.fontFamily,
-  },
-  fateSurpriseButtonText: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '700',
-    color: colors.textPrimary,
-    fontFamily: typography.fontFamily,
-  },
-  fateSummaryCard: {
-    borderRadius: 14,
+  refineToggle: {
+    minHeight: 56,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surfaceContainerLowest,
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  fateSummaryEyebrow: {
-    fontSize: 10,
+  refineCopy: {
+    flex: 1,
+    marginRight: spacing.md,
+  },
+  refineLabel: {
+    fontSize: 11,
     fontWeight: '700',
+    color: colors.textMuted,
     letterSpacing: 1.1,
     textTransform: 'uppercase',
-    color: colors.textMuted,
     fontFamily: typography.fontFamily,
   },
-  fateSummaryTitle: {
-    marginTop: 6,
-    fontSize: 18,
-    lineHeight: 23,
-    fontWeight: '700',
+  refineSummary: {
+    marginTop: 4,
+    fontSize: 13.5,
+    lineHeight: 18,
     color: colors.textPrimary,
     fontFamily: typography.fontFamily,
   },
-  fateSummaryText: {
-    marginTop: 6,
-    fontSize: 13.5,
-    lineHeight: 19,
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
+  refineContent: {
+    marginTop: spacing.md,
   },
-  fateSummaryMeta: {
-    marginTop: 8,
-    fontSize: 11.5,
-    lineHeight: 16,
-    color: colors.textMuted,
-    fontFamily: typography.fontFamily,
-  },
-  fateSummaryFootnote: {
-    marginTop: 8,
-    fontSize: 12,
-    lineHeight: 17,
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
+  refineTemperatureWrap: {
+    marginTop: spacing.md,
   },
   generatedHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
-    paddingTop: 14,
-    paddingBottom: 10,
+    paddingTop: 10,
+    paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
+    backgroundColor: colors.background,
   },
   generatedBackButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
@@ -965,33 +1398,34 @@ const styles = StyleSheet.create({
   generatedHeaderTitle: {
     flex: 1,
     textAlign: 'center',
-    fontSize: 24,
+    fontSize: 18,
     fontWeight: '700',
     color: colors.textPrimary,
     fontFamily: typography.fontFamily,
     paddingHorizontal: spacing.sm,
   },
   generatedHeaderSpacer: {
-    width: 42,
+    width: 38,
   },
   generatedScrollContent: {
     paddingHorizontal: spacing.lg,
-    paddingTop: 12,
+    paddingTop: 14,
     paddingBottom: spacing.xxl,
+    gap: 14,
   },
   resultsSectionHeader: {
-    marginTop: 16,
-    marginBottom: 10,
+    marginTop: 4,
+    marginBottom: 4,
   },
   resultsSectionTitle: {
-    fontSize: 21,
+    fontSize: 18,
     fontWeight: '700',
     color: colors.textPrimary,
     fontFamily: typography.fontFamily,
   },
   resultsSectionText: {
-    marginTop: 4,
-    fontSize: 13,
+    marginTop: 3,
+    fontSize: 12.5,
     lineHeight: 18,
     color: colors.textSecondary,
     fontFamily: typography.fontFamily,

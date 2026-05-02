@@ -9,8 +9,8 @@ export default function EmptyState() {
     <View style={styles.container}>
       <HangerHeartIcon size={88} color="#2c2622" />
       <Text style={styles.eyebrow}>Archive empty</Text>
-      <Text style={styles.title}>No saved outfits yet</Text>
-      <Text style={styles.subtitle}>Looks you keep will collect here for quick revisit and restyling.</Text>
+      <Text style={styles.title}>No saved looks yet</Text>
+      <Text style={styles.subtitle}>Build your archive by keeping the outfits you return to and want to restyle later.</Text>
     </View>
   );
 }

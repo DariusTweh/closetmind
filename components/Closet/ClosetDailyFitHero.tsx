@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -32,7 +33,7 @@ export default function ClosetDailyFitHero({
   onRegenerate,
   onPressItem,
 }: ClosetDailyFitHeroProps) {
-  const previewItems = useMemo(() => items.slice(0, 3), [items]);
+  const previewItems = useMemo(() => items.filter(Boolean), [items]);
   const subtitle = useMemo(() => {
     if (weather && location) return `Built for ${weather} in ${location}.`;
     if (weather) return `Built around ${weather}.`;
@@ -66,7 +67,11 @@ export default function ClosetDailyFitHero({
           </Text>
         </View>
       ) : (
-        <View style={styles.previewRow}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.previewRow}
+        >
           {previewItems.map((item, index) => {
             const isSelected = selectedItemIds.includes(item.id);
             return (
@@ -74,7 +79,7 @@ export default function ClosetDailyFitHero({
                 key={item.id}
                 style={[
                   styles.previewCard,
-                  index === 1 && styles.previewCardCenter,
+                  index === 0 && styles.previewCardFirst,
                   isSelected && styles.previewCardSelected,
                 ]}
                 activeOpacity={0.86}
@@ -90,7 +95,7 @@ export default function ClosetDailyFitHero({
               </TouchableOpacity>
             );
           })}
-        </View>
+        </ScrollView>
       )}
     </View>
   );
@@ -179,10 +184,12 @@ const styles = StyleSheet.create({
   previewRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 2,
+    paddingBottom: 2,
   },
   previewCard: {
-    width: '30%',
+    width: 122,
     backgroundColor: '#eef0f2',
     borderRadius: 13,
     padding: 5,
@@ -192,9 +199,8 @@ const styles = StyleSheet.create({
     shadowRadius: 7,
     elevation: 1,
   },
-  previewCardCenter: {
-    width: '31%',
-    marginHorizontal: 3,
+  previewCardFirst: {
+    marginLeft: 0,
   },
   previewCardSelected: {
     borderWidth: 2,

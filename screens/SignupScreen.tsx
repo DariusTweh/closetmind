@@ -11,49 +11,13 @@ import AuthScreenShell from '../components/Auth/AuthScreenShell';
 import AuthTextField from '../components/Auth/AuthTextField';
 import { supabase } from '../lib/supabase';
 import { colors, spacing, typography } from '../lib/theme';
+import { ensureProfileShell } from '../lib/onboarding';
 
 export default function SignupScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const navigation = useNavigation<any>();
-
-  const createProfileIfMissing = async (userId: string) => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('id', userId)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (!data) {
-      const insertData: any = {
-        id: userId,
-        created_at: new Date().toISOString(),
-      };
-
-      try {
-        const { error: testError } = await supabase
-          .from('profiles')
-          .select('onboarding_completed, style_vibes, tone, use_intent')
-          .eq('id', userId)
-          .maybeSingle();
-
-        if (!testError) {
-          insertData.onboarding_completed = false;
-          insertData.style_vibes = [];
-          insertData.tone = null;
-          insertData.use_intent = null;
-        }
-      } catch (e) {
-        console.warn('Column check failed or fields not present. Inserting minimal profile.');
-      }
-
-      const { error: insertErr } = await supabase.from('profiles').insert([insertData]);
-      if (insertErr) throw insertErr;
-    }
-  };
 
   const handleSignup = async () => {
     if (!email || !password) {
@@ -68,19 +32,25 @@ export default function SignupScreen() {
 
       const user = data.user;
       const session = data.session;
-      if (!user || !session) {
-        const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email, password });
-        if (signInErr) throw signInErr;
-        if (!signInData.user) throw new Error('No user returned after sign-in');
-        await createProfileIfMissing(signInData.user.id);
-      } else {
-        await createProfileIfMissing(user.id);
+      if (user?.id) {
+        await ensureProfileShell(user.id);
       }
 
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'OnboardingProfileBasics' as never }] as never,
-      });
+      if (!session?.user) {
+        const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email, password });
+
+        if (signInErr) {
+          if (/email not confirmed/i.test(signInErr.message || '')) {
+            Alert.alert('Check your email', 'Confirm your email to finish creating your account.');
+            return;
+          }
+          throw signInErr;
+        }
+
+        if (signInData?.user?.id) {
+          await ensureProfileShell(signInData.user.id);
+        }
+      }
     } catch (e: any) {
       console.error(e);
       Alert.alert('Sign Up Failed', e.message ?? 'Unexpected error');
@@ -91,7 +61,7 @@ export default function SignupScreen() {
 
   return (
     <AuthScreenShell
-      eyebrow="ClosetMind"
+      eyebrow="Klozu"
       title="Create your account."
       subtitle="Set up your identity, style signals, and model once, then let the app learn the rest from your closet."
       footer={

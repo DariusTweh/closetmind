@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import OnboardingChoiceCard from '../../components/Onboarding/OnboardingChoiceCard';
 import OnboardingScaffold from '../../components/Onboarding/OnboardingScaffold';
+import { ONBOARDING_STAGES, updateOnboardingProgress } from '../../lib/onboarding';
 import { supabase } from '../../lib/supabase';
 import { colors, spacing, typography } from '../../lib/theme';
+import { upsertStyleProfile } from '../../lib/styleProfile';
 
 const STYLE_OPTIONS = [
   { id: 'minimalist', label: 'Minimalist', description: 'Clean lines, restraint, strong basics.' },
@@ -18,7 +20,42 @@ const STYLE_OPTIONS = [
 
 export default function StyleVibeScreen() {
   const navigation = useNavigation<any>();
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrate = async () => {
+      try {
+        const { data, error } = await supabase.auth.getUser();
+        if (error || !data?.user) {
+          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+          return;
+        }
+
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('style_tags')
+          .eq('id', data.user.id)
+          .maybeSingle();
+
+        if (profileError) throw profileError;
+        if (!cancelled) {
+          setSelected(Array.isArray(profile?.style_tags) ? profile.style_tags.filter(Boolean) : []);
+        }
+      } catch (error) {
+        console.error('Load onboarding style vibes failed:', error);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [navigation]);
 
   const toggleSelection = (id: string) => {
     if (selected.includes(id)) {
@@ -40,6 +77,12 @@ export default function StyleVibeScreen() {
         .eq('id', userId);
 
       if (updateError) throw updateError;
+      await upsertStyleProfile(userId, {
+        primary_vibes: selected,
+      }).catch((error) => {
+        console.warn('Style profile seed save failed:', error?.message || error);
+      });
+      await updateOnboardingProgress(userId, { stage: ONBOARDING_STAGES.TONE });
 
       navigation.navigate('ToneSelect' as never);
     } catch (error) {
@@ -47,6 +90,20 @@ export default function StyleVibeScreen() {
       Alert.alert('Error', 'Could not save your style direction.');
     }
   };
+
+  if (loading) {
+    return (
+      <OnboardingScaffold
+        step="Step 3 of 6"
+        title="What style energy already feels like you?"
+        subtitle="Pick up to three directions. This becomes the first layer of your style identity."
+      >
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator size="large" color={colors.textPrimary} />
+        </View>
+      </OnboardingScaffold>
+    );
+  }
 
   return (
     <OnboardingScaffold
@@ -83,6 +140,11 @@ export default function StyleVibeScreen() {
 }
 
 const styles = StyleSheet.create({
+  loadingWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',

@@ -6,11 +6,13 @@ import { colors, shadows, spacing, typography } from '../../lib/theme';
 export default function TryOnActionBar({
   onGenerate,
   onSave,
+  generateLabel,
   generateDisabled,
   saveDisabled,
 }: {
   onGenerate: () => void;
   onSave: () => void;
+  generateLabel?: string;
   generateDisabled?: boolean;
   saveDisabled?: boolean;
 }) {
@@ -26,7 +28,7 @@ export default function TryOnActionBar({
             disabled={generateDisabled}
             style={[styles.primaryButton, generateDisabled && styles.disabledButton]}
           >
-            <Text style={styles.primaryText}>Generate Try-On</Text>
+            <Text style={styles.primaryText}>{generateLabel || 'Generate Try-On'}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -51,8 +53,8 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   bar: {
-    paddingTop: 10,
-    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingHorizontal: 8,
     backgroundColor: 'rgba(250, 250, 255, 0.98)',
     borderWidth: 1,
     borderColor: colors.border,
@@ -65,7 +67,7 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     flex: 1.15,
-    minHeight: 50,
+    minHeight: 48,
     borderRadius: 16,
     backgroundColor: colors.accent,
     alignItems: 'center',
@@ -80,7 +82,7 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     flex: 0.95,
-    minHeight: 50,
+    minHeight: 48,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: colors.border,

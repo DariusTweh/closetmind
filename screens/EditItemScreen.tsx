@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -25,9 +26,10 @@ import {
   COLORS,
   createEditItemDraft,
   formatItemMeta,
+  getSubtypeChipOptions,
   SEASONS,
-  TYPE_OPTIONS,
 } from '../lib/closetItemEditor';
+import { getFriendlyTypeLabel, isSubtypeInCategory } from '../lib/wardrobeTaxonomy';
 
 function formatTitle(value: string) {
   return String(value || '')
@@ -68,13 +70,63 @@ function DetailField({
 export default function EditItemScreen({ route, navigation }: any) {
   const item = route?.params?.item;
   const insets = useSafeAreaInsets();
+  const [loadedItem, setLoadedItem] = useState(item);
   const [draft, setDraft] = useState(() => createEditItemDraft(item));
+  const [loadingItem, setLoadingItem] = useState(Boolean(item?.id));
   const [saving, setSaving] = useState(false);
 
-  const typeOptions = useMemo(
-    () => TYPE_OPTIONS[draft.main_category] || [],
-    [draft.main_category]
+  const subtypeOptions = useMemo(
+    () => getSubtypeChipOptions(draft.main_category),
+    [draft.main_category],
   );
+
+  useEffect(() => {
+    let isActive = true;
+
+    const hydrateItem = async () => {
+      if (!item?.id) {
+        if (isActive) setLoadingItem(false);
+        return;
+      }
+
+      try {
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        if (userError || !user) {
+          if (isActive) setLoadingItem(false);
+          return;
+        }
+
+        const response = await supabase
+          .from('wardrobe')
+          .select('*')
+          .eq('id', item.id)
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+        if (!isActive) return;
+
+        if (response.error) {
+          console.error('EditItemScreen hydrate error:', response.error.message);
+          return;
+        }
+
+        if (response.data) {
+          setLoadedItem(response.data);
+          setDraft(createEditItemDraft(response.data));
+        }
+      } finally {
+        if (isActive) {
+          setLoadingItem(false);
+        }
+      }
+    };
+
+    void hydrateItem();
+
+    return () => {
+      isActive = false;
+    };
+  }, [item?.id]);
 
   const updateField = (key: string, value: string) => {
     setDraft((current: any) => ({ ...current, [key]: value }));
@@ -95,7 +147,7 @@ export default function EditItemScreen({ route, navigation }: any) {
       return;
     }
 
-    const payload = buildEditItemPayload(draft, item);
+    const payload = buildEditItemPayload(draft, loadedItem || item);
     const { error } = await updateWardrobeItemWithCompatibility({
       payload,
       itemId: item.id,
@@ -133,7 +185,12 @@ export default function EditItemScreen({ route, navigation }: any) {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.imageCard}>
-            <WardrobeItemImage item={item} style={styles.image} resizeMode="cover" />
+            <WardrobeItemImage
+              item={loadedItem || item}
+              style={styles.image}
+              resizeMode="cover"
+              imagePreference="display"
+            />
             <TouchableOpacity
               activeOpacity={0.84}
               onPress={() => Alert.alert('Coming Soon', 'Photo replacement will be added here.')}
@@ -142,6 +199,13 @@ export default function EditItemScreen({ route, navigation }: any) {
               <Text style={styles.replaceText}>Replace Image</Text>
             </TouchableOpacity>
           </View>
+
+          {loadingItem ? (
+            <View style={styles.syncBanner}>
+              <ActivityIndicator size="small" color={colors.textSecondary} />
+              <Text style={styles.syncBannerText}>Loading full item metadata...</Text>
+            </View>
+          ) : null}
 
           <EditItemSection
             title="Details"
@@ -163,22 +227,31 @@ export default function EditItemScreen({ route, navigation }: any) {
                   setDraft((current: any) => ({
                     ...current,
                     main_category: next,
-                    type: TYPE_OPTIONS[next]?.includes(current.type) ? current.type : '',
+                    subcategory: isSubtypeInCategory(current.subcategory, next) ? current.subcategory : '',
+                    type: isSubtypeInCategory(current.subcategory, next)
+                      ? current.type
+                      : '',
                   }));
                 }}
               />
             </View>
 
             <View style={styles.fieldBlock}>
-              <Text style={styles.fieldLabel}>Type</Text>
-              {typeOptions.length ? (
+              <Text style={styles.fieldLabel}>Subtype</Text>
+              {subtypeOptions.length ? (
                 <EditItemChipGroup
-                  options={typeOptions}
-                  value={draft.type}
-                  onChange={(next) => updateField('type', next)}
+                  options={subtypeOptions}
+                  value={draft.subcategory}
+                  onChange={(next) =>
+                    setDraft((current: any) => ({
+                      ...current,
+                      subcategory: next,
+                      type: getFriendlyTypeLabel(next, current.type) || current.type,
+                    }))
+                  }
                 />
               ) : (
-                <Text style={styles.helperText}>Choose a main category to refine the item type.</Text>
+                <Text style={styles.helperText}>Choose a main category to refine the subtype.</Text>
               )}
             </View>
           </EditItemSection>
@@ -279,6 +352,25 @@ const styles = StyleSheet.create({
   replaceText: {
     fontSize: 13,
     fontWeight: '600',
+    color: colors.textSecondary,
+    fontFamily: typography.fontFamily,
+  },
+  syncBanner: {
+    marginTop: spacing.md,
+    marginBottom: spacing.sm,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceContainerLowest,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  syncBannerText: {
+    marginLeft: 10,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.textSecondary,
     fontFamily: typography.fontFamily,
   },

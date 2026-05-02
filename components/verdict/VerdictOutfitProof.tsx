@@ -1,8 +1,8 @@
 import React from 'react';
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import WardrobeItemImage from '../Closet/WardrobeItemImage';
 import { spacing } from '../../lib/theme';
-import { editorialPalette, editorialShadow } from '../../lib/editorialTheme';
+import { editorialPalette } from '../../lib/editorialTheme';
 import { VerdictItem } from '../../lib/itemVerdict';
 
 type ProofItem = VerdictItem;
@@ -11,17 +11,23 @@ type Props = {
   label: string;
   reason?: string | null;
   items: ProofItem[];
+  context?: string | null;
+  onPress?: () => void;
 };
 
-export default function VerdictOutfitProof({ label, reason, items }: Props) {
+export default function VerdictOutfitProof({ label, reason, items, context, onPress }: Props) {
   return (
-    <View style={styles.card}>
+    <TouchableOpacity style={styles.card} activeOpacity={onPress ? 0.92 : 1} onPress={onPress} disabled={!onPress}>
       <View style={styles.headerRow}>
         <View style={styles.headerCopy}>
           <Text style={styles.label}>{label}</Text>
+          {context ? <Text style={styles.context}>{context}</Text> : null}
           {reason ? <Text style={styles.reason}>{reason}</Text> : null}
         </View>
-        <Text style={styles.count}>{items.length} pieces</Text>
+        <View style={styles.headerMeta}>
+          <Text style={styles.count}>{items.length} pieces</Text>
+          {onPress ? <Text style={styles.cta}>Style this</Text> : null}
+        </View>
       </View>
 
       <FlatList
@@ -32,7 +38,7 @@ export default function VerdictOutfitProof({ label, reason, items }: Props) {
         contentContainerStyle={styles.stripContent}
         renderItem={({ item }) => (
           <View style={styles.thumbCard}>
-            {item.image_path || item.image_url ? (
+            {item.cutout_url || item.cutout_image_url || item.image_path || item.image_url ? (
               <WardrobeItemImage item={item} style={styles.thumb} />
             ) : (
               <View style={[styles.thumb, styles.placeholder]} />
@@ -43,17 +49,18 @@ export default function VerdictOutfitProof({ label, reason, items }: Props) {
           </View>
         )}
       />
-    </View>
+    </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
     backgroundColor: editorialPalette.surfaceContainerLowest,
-    borderRadius: 14,
-    padding: spacing.md,
-    gap: 12,
-    ...editorialShadow,
+    borderRadius: 20,
+    padding: spacing.md + 2,
+    gap: 14,
+    borderWidth: 1,
+    borderColor: editorialPalette.outlineGhost,
   },
   headerRow: {
     flexDirection: 'row',
@@ -65,15 +72,26 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 4,
   },
+  headerMeta: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
   label: {
     color: editorialPalette.onSurface,
-    fontSize: 15,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  context: {
+    color: editorialPalette.onSurfaceVariant,
+    fontSize: 11.5,
     fontWeight: '700',
+    letterSpacing: 0.45,
+    textTransform: 'uppercase',
   },
   reason: {
     color: editorialPalette.onSurfaceVariant,
-    fontSize: 13.5,
-    lineHeight: 19,
+    fontSize: 14,
+    lineHeight: 20,
   },
   count: {
     color: editorialPalette.onSurfaceVariant,
@@ -82,18 +100,25 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
+  cta: {
+    color: editorialPalette.primary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
   stripContent: {
     paddingRight: 2,
   },
   thumbCard: {
-    width: 98,
-    gap: 7,
-    marginRight: 8,
+    width: 96,
+    gap: 8,
+    marginRight: 10,
   },
   thumb: {
     width: '100%',
     aspectRatio: 0.78,
-    borderRadius: 14,
+    borderRadius: 16,
     backgroundColor: editorialPalette.surfaceContainer,
   },
   placeholder: {

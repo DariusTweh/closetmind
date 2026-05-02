@@ -1,3 +1,5 @@
+import type { OutfitCanvasLayout } from '../components/OutfitCanvas/types';
+
 export type CanvasSourceType = 'wardrobe' | 'external';
 
 export type StyleCanvasOrigin = 'browser' | 'closet' | 'saved' | 'manual' | 'mixed' | string;
@@ -31,11 +33,18 @@ export type WardrobeCanvasSourceItem = {
   price?: number | null;
   type?: string | null;
   main_category?: string | null;
+  subcategory?: string | null;
   primary_color?: string | null;
   secondary_colors?: string[] | null;
   season?: string | null;
   image_url?: string | null;
   image_path?: string | null;
+  thumbnail_url?: string | null;
+  display_image_url?: string | null;
+  original_image_url?: string | null;
+  cutout_image_url?: string | null;
+  cutout_thumbnail_url?: string | null;
+  cutout_display_url?: string | null;
   cutout_url?: string | null;
 };
 
@@ -45,6 +54,12 @@ export type CanvasItem = {
   source_item_id: string | null;
   image_url: string;
   image_path?: string | null;
+  thumbnail_url?: string | null;
+  display_image_url?: string | null;
+  original_image_url?: string | null;
+  cutout_image_url?: string | null;
+  cutout_thumbnail_url?: string | null;
+  cutout_display_url?: string | null;
   cutout_url?: string | null;
   title?: string | null;
   brand?: string | null;
@@ -52,6 +67,7 @@ export type CanvasItem = {
   product_url?: string | null;
   price?: number | null;
   category?: string | null;
+  subcategory?: string | null;
   color?: string | null;
   x: number;
   y: number;
@@ -67,6 +83,12 @@ export type SavedOutfitItem = {
   source_item_id: string | null;
   image_url: string;
   image_path?: string | null;
+  thumbnail_url?: string | null;
+  display_image_url?: string | null;
+  original_image_url?: string | null;
+  cutout_image_url?: string | null;
+  cutout_thumbnail_url?: string | null;
+  cutout_display_url?: string | null;
   cutout_url?: string | null;
   title?: string | null;
   name?: string | null;
@@ -79,12 +101,16 @@ export type SavedOutfitItem = {
   reason?: string | null;
   type?: string | null;
   main_category?: string | null;
+  subcategory?: string | null;
   primary_color?: string | null;
   secondary_colors?: string[];
   season?: string | null;
   source_subtype?: string | null;
   external_item_id?: string | null;
   is_saved_to_closet?: boolean | null;
+  locked?: boolean;
+  outfit_role?: string | null;
+  layout?: OutfitCanvasLayout | null;
 };
 
 export type ExternalItemRecord = {

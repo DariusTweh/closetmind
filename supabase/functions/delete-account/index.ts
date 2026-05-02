@@ -12,11 +12,13 @@ const JSON_HEADERS = {
 };
 
 const APP_TABLES: Array<{ table: string; column: string }> = [
+  { table: "travel_collections", column: "user_id" },
   { table: "saved_outfits", column: "user_id" },
   { table: "daily_outfits", column: "user_id" },
   { table: "tryon_outfits", column: "user_id" },
   { table: "tryon_jobs", column: "user_id" },
   { table: "user_style_profiles", column: "user_id" },
+  { table: "user_browser_stores", column: "user_id" },
   { table: "onboarding_outfit_photos", column: "user_id" },
   { table: "wardrobe", column: "user_id" },
   { table: "profiles", column: "id" },

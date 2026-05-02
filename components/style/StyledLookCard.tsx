@@ -12,11 +12,23 @@ type LookItem = {
   id: string;
   name?: string;
   type?: string;
-  image_url?: string;
-  image_path?: string;
+  image_url?: string | null;
+  image_path?: string | null;
+  cutout_url?: string | null;
+  cutout_image_url?: string | null;
   main_category?: string;
+  outfit_role?: string | null;
   reason?: string;
 };
+
+function formatRole(value?: string | null) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return 'PIECE';
+  if (normalized === 'base_top') return 'BASE';
+  if (normalized === 'top_layer') return 'LAYER';
+  if (normalized === 'onepiece') return 'ONE-PIECE';
+  return normalized.toUpperCase();
+}
 
 type StyledLook = {
   id: string;
@@ -64,7 +76,7 @@ export default function StyledLookCard({
           return (
             <View key={item.id} style={styles.itemCard}>
               <View style={styles.itemImageFrame}>
-                {item.image_path || item.image_url ? (
+                {item.cutout_url || item.cutout_image_url || item.image_path || item.image_url ? (
                   <WardrobeItemImage item={item} style={styles.itemImage} />
                 ) : (
                   <View style={styles.itemImagePlaceholder} />
@@ -76,7 +88,7 @@ export default function StyledLookCard({
                 ) : null}
               </View>
               <Text style={styles.itemCategory} numberOfLines={1}>
-                {String(item.main_category || item.type || 'Piece').toUpperCase()}
+                {formatRole(item.outfit_role || item.main_category || item.type)}
               </Text>
               <Text style={styles.itemName} numberOfLines={1}>
                 {item.name || item.type || 'Item'}

@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "Closana",
+    "name": "Klozu",
     "slug": "closana",
     "version": "1.0.0",
     "orientation": "portrait",
-    "scheme": "closana",
+    "scheme": "klozu",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
@@ -17,10 +17,13 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.dariustweh.closana",
       "buildNumber": "1",
+      "entitlements": {
+      "aps-environment": "production"
+              },
       "infoPlist": {
-        "NSCameraUsageDescription": "Closana uses your camera so you can capture wardrobe items directly.",
-        "NSPhotoLibraryUsageDescription": "Closana uses your photo library so you can upload closet items, onboarding outfit photos, and profile images.",
-        "NSLocationWhenInUseUsageDescription": "Closana uses your location to personalize weather-aware outfit recommendations.",
+      "NSCameraUsageDescription": "Klozu uses your camera so you can capture wardrobe items directly.",
+      "NSPhotoLibraryUsageDescription": "Klozu uses your photo library so you can upload closet items, onboarding outfit photos, and profile images.",
+      "NSLocationWhenInUseUsageDescription": "Klozu uses your location to personalize weather-aware outfit recommendations.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -42,19 +45,27 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Closana uses your photo library so you can upload closet items, onboarding outfit photos, and profile images."
+          "photosPermission": "Klozu uses your photo library so you can upload closet items, onboarding outfit photos, and profile images."
         }
       ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Closana uses your camera so you can capture wardrobe items directly."
+          "cameraPermission": "Klozu uses your camera so you can capture wardrobe items directly."
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Closana uses your location to personalize weather-aware outfit recommendations."
+          "locationWhenInUsePermission": "Klozu uses your location to personalize weather-aware outfit recommendations."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/adaptive-icon.png",
+          "color": "#111111",
+          "sounds": []
         }
       ]
     ],

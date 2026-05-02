@@ -11,10 +11,7 @@ export default function ProfileHeader({ username, avatarUrl, onEditPress, onSett
         <Ionicons name="settings-outline" size={20} color="#111" />
       </TouchableOpacity>
 
-      <Image
-        source={{ uri: avatarUrl || 'https://i.pravatar.cc/150?img=3' }}
-        style={styles.avatar}
-      />
+      {avatarUrl ? <Image source={{ uri: avatarUrl }} style={styles.avatar} /> : <View style={styles.avatarPlaceholder} />}
 
       <View style={styles.nameRow}>
         <Text style={styles.username}>{username || 'Username'}</Text>
@@ -44,6 +41,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     backgroundColor: colors.border,
   },
+  avatarPlaceholder: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    marginBottom: spacing.sm,
+    backgroundColor: colors.border,
+  },
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -59,4 +63,3 @@ const styles = StyleSheet.create({
     color: colors.accentSecondary,
   },
 });
-

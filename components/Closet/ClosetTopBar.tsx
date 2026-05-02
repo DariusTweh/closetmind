@@ -13,6 +13,7 @@ type ClosetTopBarProps = {
   subtitle?: string | null;
   avatarUri?: string | null;
   onPressProfile: () => void;
+  onPressSaved?: () => void;
   onPressSettings?: () => void;
 };
 
@@ -20,18 +21,25 @@ export default function ClosetTopBar({
   subtitle,
   avatarUri,
   onPressProfile,
+  onPressSaved,
   onPressSettings,
 }: ClosetTopBarProps) {
   return (
     <View style={styles.container}>
       <View style={styles.textWrap}>
-        <Text style={styles.title}>Closet</Text>
+        <Text style={styles.title}>Klozu</Text>
         <Text style={styles.subtitle}>
           {subtitle || 'Curated essentials, ready for today'}
         </Text>
       </View>
 
       <View style={styles.actions}>
+        {onPressSaved ? (
+          <TouchableOpacity style={styles.iconButton} onPress={onPressSaved}>
+            <Ionicons name="bookmark-outline" size={16} color={colors.textPrimary} />
+          </TouchableOpacity>
+        ) : null}
+
         {onPressSettings ? (
           <TouchableOpacity style={styles.iconButton} onPress={onPressSettings}>
             <Ionicons name="settings-outline" size={16} color={colors.textPrimary} />

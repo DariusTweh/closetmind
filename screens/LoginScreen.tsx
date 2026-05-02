@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import AuthScreenShell from '../components/Auth/AuthScreenShell';
@@ -17,54 +16,7 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [checkingSession, setCheckingSession] = useState(true);
   const navigation = useNavigation<any>();
-
-  useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      try {
-        const { data, error } = await supabase.auth.getSession();
-
-        if (!mounted) return;
-
-        if (error) {
-          console.error('getSession error:', error.message);
-          setCheckingSession(false);
-          return;
-        }
-
-        if (data?.session?.user) {
-          navigation.reset({
-            index: 0,
-            routes: [{ name: 'MainTabs' as never }] as never,
-          });
-        } else {
-          setCheckingSession(false);
-        }
-      } catch (err: any) {
-        console.error('Initial session check failed:', err?.message || err);
-        if (mounted) setCheckingSession(false);
-      }
-    })();
-
-    return () => {
-      mounted = false;
-    };
-  }, [navigation]);
-
-  useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        navigation.reset({ index: 0, routes: [{ name: 'MainTabs' as never }] as never });
-      }
-    });
-
-    return () => {
-      sub?.subscription?.unsubscribe();
-    };
-  }, [navigation]);
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -75,8 +27,6 @@ export default function LoginScreen() {
     setLoading(true);
 
     try {
-      await supabase.auth.signOut();
-
       const { error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
@@ -106,7 +56,7 @@ export default function LoginScreen() {
     }
 
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: 'yourapp://reset-password',
+      redirectTo: 'klozu://reset-password',
     });
 
     if (error) {
@@ -116,17 +66,9 @@ export default function LoginScreen() {
     }
   };
 
-  if (checkingSession) {
-    return (
-      <View style={styles.loadingScreen}>
-        <ActivityIndicator size="large" color={colors.textPrimary} />
-      </View>
-    );
-  }
-
   return (
     <AuthScreenShell
-      eyebrow="ClosetMind"
+      eyebrow="Klozu"
       title="Sign in to your closet."
       subtitle="Track what you own, generate sharper looks, and keep verdicts tied to one personal wardrobe."
       footer={
@@ -184,12 +126,6 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  loadingScreen: {
-    flex: 1,
-    backgroundColor: colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   primaryButton: {
     minHeight: 54,
     borderRadius: 16,

@@ -90,7 +90,12 @@ export default function ViewItemModal({
                   </View>
 
                   <View style={styles.imageFrame}>
-                    <WardrobeItemImage item={item} style={styles.image} resizeMode="cover" />
+                    <WardrobeItemImage
+                      item={item}
+                      style={styles.image}
+                      resizeMode="cover"
+                      imagePreference="display"
+                    />
                   </View>
 
                   <View style={styles.copyBlock}>

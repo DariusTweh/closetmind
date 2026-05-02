@@ -6,12 +6,17 @@ import type {
   SavedStyleCanvas,
   WardrobeCanvasSourceItem,
 } from '../types/styleCanvas';
+import { normalizeOutfitCanvasLayout, toSavedItemLayout } from '../components/OutfitCanvas/utils';
 
 const STAGGER_X = 24;
 const STAGGER_Y = 18;
 const DEFAULT_START_X = 28;
 const DEFAULT_START_Y = 36;
 const WARDROBE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LEGACY_STAGE_WIDTH = 345;
+const LEGACY_STAGE_HEIGHT = 420;
+const LEGACY_ITEM_WIDTH = 146;
+const LEGACY_ITEM_HEIGHT = 196;
 
 function normalizeText(value: any, maxLength = 160) {
   const normalized = String(value ?? '')
@@ -92,13 +97,25 @@ export function moveCanvasItemToLayer(items: CanvasItem[], itemId: string, direc
   const currentIndex = ordered.findIndex((item) => item.id === itemId);
   if (currentIndex === -1) return ordered;
 
-  const nextOrdered = ordered.slice();
-  const [target] = nextOrdered.splice(currentIndex, 1);
+  if (direction === 'front' && currentIndex >= ordered.length - 1) {
+    return ordered;
+  }
 
+  if (direction === 'back' && currentIndex <= 0) {
+    return ordered;
+  }
+
+  const nextOrdered = ordered.slice();
   if (direction === 'front') {
-    nextOrdered.push(target);
+    [nextOrdered[currentIndex], nextOrdered[currentIndex + 1]] = [
+      nextOrdered[currentIndex + 1],
+      nextOrdered[currentIndex],
+    ];
   } else {
-    nextOrdered.unshift(target);
+    [nextOrdered[currentIndex - 1], nextOrdered[currentIndex]] = [
+      nextOrdered[currentIndex],
+      nextOrdered[currentIndex - 1],
+    ];
   }
 
   return reindexCanvasItems(nextOrdered);
@@ -154,13 +171,20 @@ export function wardrobeItemsToCanvasItems(
         source_item_id: item.id || null,
         image_url: String(item.image_url || '').trim(),
         image_path: item.image_path ?? null,
-        cutout_url: item.cutout_url ?? null,
+        thumbnail_url: item.thumbnail_url ?? null,
+        display_image_url: item.display_image_url ?? null,
+        original_image_url: item.original_image_url ?? null,
+        cutout_image_url: item.cutout_image_url ?? null,
+        cutout_thumbnail_url: item.cutout_thumbnail_url ?? null,
+        cutout_display_url: item.cutout_display_url ?? null,
+        cutout_url: item.cutout_url ?? item.cutout_image_url ?? null,
         title: normalizeText(item.name || item.source_title, 180),
         brand: normalizeText(item.brand, 80),
         retailer: normalizeText(item.retailer, 80),
         product_url: normalizeText(item.product_url, 500),
         price: normalizePrice(item.price),
         category: normalizeText(item.main_category || item.type, 60),
+        subcategory: normalizeText(item.subcategory, 60),
         color: normalizeText(item.primary_color, 40),
         x: position.x,
         y: position.y,
@@ -190,6 +214,12 @@ export function deserializeStyleCanvas(canvas: any, items: any[] = []): SavedSty
         source_item_id: normalizeText(item?.source_item_id, 120),
         image_url: String(item?.image_url || '').trim(),
         image_path: normalizeText(item?.image_path, 240),
+        thumbnail_url: normalizeText(item?.thumbnail_url, 500),
+        display_image_url: normalizeText(item?.display_image_url, 500),
+        original_image_url: normalizeText(item?.original_image_url, 500),
+        cutout_image_url: normalizeText(item?.cutout_image_url, 500),
+        cutout_thumbnail_url: normalizeText(item?.cutout_thumbnail_url, 500),
+        cutout_display_url: normalizeText(item?.cutout_display_url, 500),
         cutout_url: normalizeText(item?.cutout_url, 500),
         title: normalizeText(item?.title, 180),
         brand: normalizeText(item?.brand, 80),
@@ -197,6 +227,7 @@ export function deserializeStyleCanvas(canvas: any, items: any[] = []): SavedSty
         product_url: normalizeText(item?.product_url, 500),
         price: normalizePrice(item?.price),
         category: normalizeText(item?.category, 60),
+        subcategory: normalizeText(item?.subcategory, 60),
         color: normalizeText(item?.color, 40),
         x: normalizeNumber(item?.x, DEFAULT_START_X),
         y: normalizeNumber(item?.y, DEFAULT_START_Y),
@@ -216,6 +247,12 @@ export function serializeCanvasItemsForSave(items: CanvasItem[]) {
     source_item_id: item.source_item_id,
     image_url: item.image_url,
     image_path: item.image_path ?? null,
+    thumbnail_url: item.thumbnail_url ?? null,
+    display_image_url: item.display_image_url ?? null,
+    original_image_url: item.original_image_url ?? null,
+    cutout_image_url: item.cutout_image_url ?? null,
+    cutout_thumbnail_url: item.cutout_thumbnail_url ?? null,
+    cutout_display_url: item.cutout_display_url ?? null,
     cutout_url: item.cutout_url ?? null,
     title: item.title ?? null,
     brand: item.brand ?? null,
@@ -280,6 +317,17 @@ export function canvasItemsToSavedOutfitItems(items: CanvasItem[]): SavedOutfitI
       const title = normalizeText(item.title, 180);
       const category = normalizeText(item.category, 60);
       const color = normalizeText(item.color, 40);
+      const subcategory = normalizeText(item.subcategory, 60);
+      const normalizedLayout = toSavedItemLayout(
+        normalizeOutfitCanvasLayout({
+          x: normalizeNumber(item.x, DEFAULT_START_X) / LEGACY_STAGE_WIDTH,
+          y: normalizeNumber(item.y, DEFAULT_START_Y) / LEGACY_STAGE_HEIGHT,
+          w: (LEGACY_ITEM_WIDTH * normalizeNumber(item.scale, 1)) / LEGACY_STAGE_WIDTH,
+          h: (LEGACY_ITEM_HEIGHT * normalizeNumber(item.scale, 1)) / LEGACY_STAGE_HEIGHT,
+          rotation: (normalizeNumber(item.rotation, 0) * 180) / Math.PI,
+          zIndex: normalizeNumber(item.zIndex, 1),
+        }),
+      );
 
       return {
         id: sourceItemId || createCanvasItemId('saved_outfit_item', item.id),
@@ -287,6 +335,12 @@ export function canvasItemsToSavedOutfitItems(items: CanvasItem[]): SavedOutfitI
         source_item_id: sourceItemId,
         image_url: String(item.image_url || '').trim(),
         image_path: normalizeText(item.image_path, 240),
+        thumbnail_url: normalizeText(item.thumbnail_url, 500),
+        display_image_url: normalizeText(item.display_image_url, 500),
+        original_image_url: normalizeText(item.original_image_url, 500),
+        cutout_image_url: normalizeText(item.cutout_image_url, 500),
+        cutout_thumbnail_url: normalizeText(item.cutout_thumbnail_url, 500),
+        cutout_display_url: normalizeText(item.cutout_display_url, 500),
         cutout_url: normalizeText(item.cutout_url, 500),
         title,
         name: title,
@@ -295,6 +349,7 @@ export function canvasItemsToSavedOutfitItems(items: CanvasItem[]): SavedOutfitI
         product_url: normalizeText(item.product_url, 500),
         price: normalizePrice(item.price),
         category,
+        subcategory,
         color,
         reason: null,
         type: category,
@@ -305,6 +360,9 @@ export function canvasItemsToSavedOutfitItems(items: CanvasItem[]): SavedOutfitI
         source_subtype: sourceType === 'external' ? 'browser_import' : null,
         external_item_id: sourceType === 'external' ? sourceItemId : null,
         is_saved_to_closet: sourceType === 'wardrobe',
+        locked: Boolean(item.locked),
+        outfit_role: category,
+        layout: normalizedLayout,
       };
     });
 }
@@ -328,6 +386,7 @@ export function extractTryOnCandidatesFromCanvas(items: CanvasItem[]) {
     const sourceType = inferSourceType(item);
     const category = normalizeText(item.category, 60);
     const color = normalizeText(item.color, 40);
+    const subcategory = normalizeText(item.subcategory, 60);
     const sourceItemId =
       normalizeText(item.source_item_id, 120) ||
       normalizeText(sourceType === 'wardrobe' ? item.id : item.source_item_id || item.id, 120);
@@ -341,8 +400,15 @@ export function extractTryOnCandidatesFromCanvas(items: CanvasItem[]) {
       name: normalizeText(item.title, 180),
       type: category,
       main_category: category,
+      subcategory,
       image_url: String(item.image_url || '').trim(),
       image_path: normalizeText(item.image_path, 240),
+      thumbnail_url: normalizeText(item.thumbnail_url, 500),
+      display_image_url: normalizeText(item.display_image_url, 500),
+      original_image_url: normalizeText(item.original_image_url, 500),
+      cutout_image_url: normalizeText(item.cutout_image_url, 500),
+      cutout_thumbnail_url: normalizeText(item.cutout_thumbnail_url, 500),
+      cutout_display_url: normalizeText(item.cutout_display_url, 500),
       primary_color: color,
       color,
       product_url: normalizeText(item.product_url, 500),
@@ -381,8 +447,10 @@ export function canvasItemsToBrowserItems(items: CanvasItem[]): BrowserItem[] {
 export function normalizeSavedOutfitLikeItem(item: any): SavedOutfitItem {
   const sourceType = inferSourceType(item);
   const category = normalizeText(item?.category || item?.main_category || item?.type, 60);
+  const subcategory = normalizeText(item?.subcategory, 60);
   const color = normalizeText(item?.color || item?.primary_color, 40);
   const title = normalizeText(item?.title || item?.name, 180);
+  const normalizedLayout = toSavedItemLayout(normalizeOutfitCanvasLayout(item?.layout));
   const sourceItemId =
     normalizeText(item?.source_item_id, 120) ||
     normalizeText(sourceType === 'wardrobe' ? item?.id : item?.external_item_id || item?.id, 120);
@@ -393,7 +461,13 @@ export function normalizeSavedOutfitLikeItem(item: any): SavedOutfitItem {
     source_item_id: sourceItemId,
     image_url: String(item?.image_url || '').trim(),
     image_path: normalizeText(item?.image_path, 240),
-    cutout_url: normalizeText(item?.cutout_url, 500),
+    thumbnail_url: normalizeText(item?.thumbnail_url, 500),
+    display_image_url: normalizeText(item?.display_image_url, 500),
+    original_image_url: normalizeText(item?.original_image_url, 500),
+    cutout_image_url: normalizeText(item?.cutout_image_url, 500),
+    cutout_thumbnail_url: normalizeText(item?.cutout_thumbnail_url, 500),
+    cutout_display_url: normalizeText(item?.cutout_display_url, 500),
+    cutout_url: normalizeText(item?.cutout_url || item?.cutout_image_url, 500),
     title,
     name: title,
     brand: normalizeText(item?.brand, 80),
@@ -405,6 +479,7 @@ export function normalizeSavedOutfitLikeItem(item: any): SavedOutfitItem {
     reason: normalizeText(item?.reason, 400),
     type: normalizeText(item?.type, 60) || category,
     main_category: normalizeText(item?.main_category, 60) || category,
+    subcategory,
     primary_color: normalizeText(item?.primary_color, 40) || color,
     secondary_colors: normalizeStringArray(item?.secondary_colors),
     season: normalizeText(item?.season, 24),
@@ -414,5 +489,8 @@ export function normalizeSavedOutfitLikeItem(item: any): SavedOutfitItem {
         ? normalizeText(item?.external_item_id || sourceItemId || item?.id, 120)
         : null,
     is_saved_to_closet: sourceType === 'wardrobe',
+    locked: Boolean(item?.locked),
+    outfit_role: normalizeText(item?.outfit_role, 60),
+    layout: normalizedLayout,
   };
 }

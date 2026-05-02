@@ -1,16 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { colors, spacing } from '../lib/theme';
+import { bumpClosetRevision } from '../lib/itemVerdictCache';
 import useClosetDashboard from '../hooks/useClosetDashboard';
 
 import ClosetDailyFitHero from '../components/Closet/ClosetDailyFitHero';
@@ -27,41 +28,81 @@ import FilterModal from '../components/Closet/modal/FilterModal';
 import ViewItemModal from '../components/Closet/modal/ViewItemModal';
 
 const MAIN_CATEGORIES = ['top', 'bottom', 'shoes', 'outerwear', 'accessory', 'layer', 'onepiece'];
-const BASE_WARDROBE_SELECT_FIELDS = [
+const CORE_WARDROBE_SELECT_FIELDS = [
   'id',
-  'user_id',
   'name',
   'type',
   'main_category',
-  'color',
   'primary_color',
   'secondary_colors',
   'pattern_description',
   'season',
   'vibe_tags',
   'image_url',
+  'source_type',
+  'wardrobe_status',
   'created_at',
 ];
-const MEDIA_WARDROBE_SELECT_FIELDS = ['image_path'];
-const STATUS_WARDROBE_SELECT_FIELDS = ['wardrobe_status'];
-const OPTIONAL_WARDROBE_SELECT_FIELDS = ['is_listed', 'listed'];
-const WARDROBE_SELECT_FIELDS = [
-  ...BASE_WARDROBE_SELECT_FIELDS,
-  ...MEDIA_WARDROBE_SELECT_FIELDS,
-  ...STATUS_WARDROBE_SELECT_FIELDS,
-  ...OPTIONAL_WARDROBE_SELECT_FIELDS,
+const LEGACY_LISTED_WARDROBE_FIELDS = ['is_listed', 'listed'];
+const REQUIRED_WARDROBE_MEDIA_FIELDS = [
+  'image_path',
+  'cutout_image_url',
+  'original_image_url',
+];
+const OPTIONAL_WARDROBE_MEDIA_FIELDS = [
+  'thumbnail_url',
+  'display_image_url',
+  'cutout_thumbnail_url',
+  'cutout_display_url',
+];
+const OPTIONAL_WARDROBE_STYLE_FIELDS = [
+  'subcategory',
+  'garment_function',
+  'fabric_weight',
+  'style_role',
+  'material_guess',
+  'silhouette',
+  'weather_use',
+  'occasion_tags',
+  'formality',
+  'layering_role',
+  'fit',
+  'fit_notes',
+];
+const FULL_WARDROBE_SELECT_FIELDS = [
+  ...CORE_WARDROBE_SELECT_FIELDS,
+  ...LEGACY_LISTED_WARDROBE_FIELDS,
+  ...REQUIRED_WARDROBE_MEDIA_FIELDS,
+  ...OPTIONAL_WARDROBE_MEDIA_FIELDS,
+  ...OPTIONAL_WARDROBE_STYLE_FIELDS,
 ].join(', ');
-const MEDIA_WARDROBE_SELECT_ONLY_FIELDS = [
-  ...BASE_WARDROBE_SELECT_FIELDS,
-  ...MEDIA_WARDROBE_SELECT_FIELDS,
-  ...STATUS_WARDROBE_SELECT_FIELDS,
+const MEDIA_WITHOUT_CUTOUT_DERIVATIVE_FIELDS = [
+  ...CORE_WARDROBE_SELECT_FIELDS,
+  ...LEGACY_LISTED_WARDROBE_FIELDS,
+  ...REQUIRED_WARDROBE_MEDIA_FIELDS,
+  'thumbnail_url',
+  'display_image_url',
+  ...OPTIONAL_WARDROBE_STYLE_FIELDS,
 ].join(', ');
-const STATUS_WARDROBE_SELECT_ONLY_FIELDS = [
-  ...BASE_WARDROBE_SELECT_FIELDS,
-  ...STATUS_WARDROBE_SELECT_FIELDS,
+const MEDIA_WITHOUT_ANY_DERIVATIVE_FIELDS = [
+  ...CORE_WARDROBE_SELECT_FIELDS,
+  ...LEGACY_LISTED_WARDROBE_FIELDS,
+  ...REQUIRED_WARDROBE_MEDIA_FIELDS,
+  ...OPTIONAL_WARDROBE_STYLE_FIELDS,
 ].join(', ');
-const LEGACY_WARDROBE_SELECT_FIELDS = BASE_WARDROBE_SELECT_FIELDS.join(', ');
+const LISTED_WARDROBE_SELECT_FIELDS = [
+  ...CORE_WARDROBE_SELECT_FIELDS,
+  ...LEGACY_LISTED_WARDROBE_FIELDS,
+  ...REQUIRED_WARDROBE_MEDIA_FIELDS,
+  ...OPTIONAL_WARDROBE_STYLE_FIELDS,
+].join(', ');
+const MINIMAL_WARDROBE_SELECT_FIELDS = [
+  ...CORE_WARDROBE_SELECT_FIELDS,
+  'image_path',
+].join(', ');
 const WARDROBE_PAGE_SIZE = 60;
+const AUTH_EVENTS_REQUIRING_REFRESH = new Set(['SIGNED_IN', 'SIGNED_OUT']);
+let CLOSET_WARDROBE_CACHE: { userId: string; items: any[] } | null = null;
 
 const CATEGORY_LABELS: Record<string, string> = {
   top: 'Tops',
@@ -75,17 +116,58 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 const isWardrobeItemListed = (item: any) => item?.is_listed === true || item?.listed === true;
 
-const hasMissingWardrobeOptionalColumnError = (message: string) => (
-  OPTIONAL_WARDROBE_SELECT_FIELDS.some((field) => message.includes(`wardrobe.${field}`))
-);
+const WARDROBE_QUERY_ATTEMPTS = [
+  { select: FULL_WARDROBE_SELECT_FIELDS, excludeScannedCandidates: true },
+  { select: MEDIA_WITHOUT_CUTOUT_DERIVATIVE_FIELDS, excludeScannedCandidates: true },
+  { select: MEDIA_WITHOUT_ANY_DERIVATIVE_FIELDS, excludeScannedCandidates: true },
+  { select: LISTED_WARDROBE_SELECT_FIELDS, excludeScannedCandidates: true },
+  { select: MINIMAL_WARDROBE_SELECT_FIELDS, excludeScannedCandidates: true },
+  { select: MINIMAL_WARDROBE_SELECT_FIELDS, excludeScannedCandidates: false },
+];
 
-const hasMissingWardrobeMediaColumnError = (message: string) => (
-  MEDIA_WARDROBE_SELECT_FIELDS.some((field) => message.includes(`wardrobe.${field}`))
-);
+const isMissingSchemaError = (error: any) => {
+  const normalized = String(error?.message || error?.details || error || '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes('does not exist') ||
+    normalized.includes('could not find the') ||
+    normalized.includes('schema cache') ||
+    normalized.includes('column') ||
+    normalized.includes('relation')
+  );
+};
 
-const hasMissingWardrobeStatusColumnError = (message: string) => (
-  STATUS_WARDROBE_SELECT_FIELDS.some((field) => message.includes(`wardrobe.${field}`))
-);
+const parseMissingWardrobeColumn = (error: any) => {
+  const message = String(error?.message || error?.details || error || '');
+  const matches = [
+    message.match(/column\s+wardrobe\.([a-zA-Z0-9_]+)\s+does not exist/i),
+    message.match(/column\s+([a-zA-Z0-9_]+)\s+does not exist/i),
+    message.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i),
+  ];
+
+  for (const match of matches) {
+    const column = match?.[1]?.trim();
+    if (column) return column;
+  }
+
+  return null;
+};
+
+const removeSelectColumn = (selectFields: string, columnName: string) => {
+  const nextFields = selectFields
+    .split(',')
+    .map((field) => field.trim())
+    .filter(Boolean)
+    .filter((field) => field !== columnName);
+
+  if (!nextFields.length || nextFields.length === selectFields.split(',').filter(Boolean).length) {
+    return null;
+  }
+
+  return nextFields.join(', ');
+};
 
 type AdvancedFilters = {
   category: string;
@@ -95,8 +177,8 @@ type AdvancedFilters = {
 };
 
 export default function ClosetScreen() {
-  const [wardrobe, setWardrobe] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [wardrobe, setWardrobe] = useState<any[]>(CLOSET_WARDROBE_CACHE?.items ?? []);
+  const [loading, setLoading] = useState(!CLOSET_WARDROBE_CACHE);
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [editMode, setEditMode] = useState(false);
@@ -114,6 +196,8 @@ export default function ClosetScreen() {
 
   const isFocused = useIsFocused();
   const navigation = useNavigation<any>();
+  const hasLoadedOnceRef = useRef(Boolean(CLOSET_WARDROBE_CACHE));
+  const fetchingWardrobeRef = useRef(false);
   const {
     avatarUri,
     dailyFitItems,
@@ -125,70 +209,97 @@ export default function ClosetScreen() {
   } = useClosetDashboard({ wardrobe, enabled: isFocused });
   const heroItems = loading ? dailyFitItems : (wardrobe.length ? dailyFitItems : []);
 
-  const fetchWardrobe = useCallback(async () => {
-    setLoading(true);
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      setWardrobe([]);
+  const fetchWardrobe = useCallback(async ({ showLoader = !hasLoadedOnceRef.current } = {}) => {
+    if (fetchingWardrobeRef.current) return;
+    fetchingWardrobeRef.current = true;
+    if (showLoader) setLoading(true);
+
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        CLOSET_WARDROBE_CACHE = null;
+        setWardrobe([]);
+        Alert.alert('Not Logged In', 'Please log in to view your closet.');
+        return;
+      }
+
+      if (
+        !showLoader &&
+        CLOSET_WARDROBE_CACHE?.userId === user.id &&
+        Array.isArray(CLOSET_WARDROBE_CACHE.items)
+      ) {
+        setWardrobe(CLOSET_WARDROBE_CACHE.items);
+      }
+
+      const runWardrobeQuery = async (selectFields: string, excludeScannedCandidates = true) => {
+        let query = supabase
+          .from('wardrobe')
+          .select(selectFields)
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (excludeScannedCandidates) {
+          query = query.neq('wardrobe_status', 'scanned_candidate');
+        }
+
+        return query;
+      };
+
+      let data: any[] | null = null;
+      let error: any = null;
+
+      for (const attempt of WARDROBE_QUERY_ATTEMPTS) {
+        let selectFields = attempt.select;
+        const removedColumns = new Set<string>();
+
+        while (selectFields) {
+          const response = await runWardrobeQuery(
+            selectFields,
+            attempt.excludeScannedCandidates,
+          );
+          data = response.data;
+          error = response.error;
+
+          if (!error) break;
+          if (!isMissingSchemaError(error)) break;
+
+          const missingColumn = parseMissingWardrobeColumn(error);
+          if (!missingColumn || removedColumns.has(missingColumn)) break;
+
+          const nextSelectFields = removeSelectColumn(selectFields, missingColumn);
+          if (!nextSelectFields) break;
+
+          removedColumns.add(missingColumn);
+          selectFields = nextSelectFields;
+        }
+
+        if (!error) break;
+        if (!isMissingSchemaError(error)) break;
+      }
+
+      if (error) {
+        console.error('ClosetScreen fetchWardrobe error:', error.message);
+        Alert.alert('Error', 'Failed to load your closet.');
+        setWardrobe([]);
+        return;
+      }
+
+      const nextItems = data || [];
+      CLOSET_WARDROBE_CACHE = {
+        userId: user.id,
+        items: nextItems,
+      };
+      setWardrobe(nextItems);
+    } finally {
+      hasLoadedOnceRef.current = true;
+      fetchingWardrobeRef.current = false;
       setLoading(false);
-      Alert.alert('Not Logged In', 'Please log in to view your closet.');
-      return;
     }
-
-    let { data, error } = await supabase
-      .from('wardrobe')
-      .select(WARDROBE_SELECT_FIELDS)
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
-
-    if (error && hasMissingWardrobeOptionalColumnError(error.message)) {
-      const fallbackResponse = await supabase
-        .from('wardrobe')
-        .select(MEDIA_WARDROBE_SELECT_ONLY_FIELDS)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-
-      data = fallbackResponse.data;
-      error = fallbackResponse.error;
-    }
-
-    if (error && hasMissingWardrobeMediaColumnError(error.message)) {
-      const fallbackResponse = await supabase
-        .from('wardrobe')
-        .select(STATUS_WARDROBE_SELECT_ONLY_FIELDS)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-
-      data = fallbackResponse.data;
-      error = fallbackResponse.error;
-    }
-
-    if (error && hasMissingWardrobeStatusColumnError(error.message)) {
-      const fallbackResponse = await supabase
-        .from('wardrobe')
-        .select(LEGACY_WARDROBE_SELECT_FIELDS)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-
-      data = fallbackResponse.data;
-      error = fallbackResponse.error;
-    }
-
-    if (error) {
-      console.error('ClosetScreen fetchWardrobe error:', error.message);
-      Alert.alert('Error', 'Failed to load your closet.');
-      setWardrobe([]);
-      setLoading(false);
-      return;
-    }
-
-    setWardrobe((data || []).filter((item: any) => item?.wardrobe_status !== 'scanned_candidate'));
-    setLoading(false);
   }, []);
 
   useEffect(() => {
     if (isFocused) {
-      fetchWardrobe();
+      void fetchWardrobe({ showLoader: !hasLoadedOnceRef.current });
     }
   }, [fetchWardrobe, isFocused]);
 
@@ -197,8 +308,18 @@ export default function ClosetScreen() {
   }, [advancedFilters, filter, searchQuery, wardrobe.length]);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
-      fetchWardrobe();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (!AUTH_EVENTS_REQUIRING_REFRESH.has(String(event || ''))) return;
+
+      if (event === 'SIGNED_OUT') {
+        CLOSET_WARDROBE_CACHE = null;
+        hasLoadedOnceRef.current = false;
+        setWardrobe([]);
+        setLoading(false);
+        return;
+      }
+
+      void fetchWardrobe({ showLoader: false });
     });
     return () => subscription.unsubscribe();
   }, [fetchWardrobe]);
@@ -299,6 +420,7 @@ export default function ClosetScreen() {
       return;
     }
 
+    await bumpClosetRevision(user.id).catch(() => null);
     fetchWardrobe();
   };
 
@@ -313,6 +435,7 @@ export default function ClosetScreen() {
       .eq('user_id', user.id);
 
     if (!error) {
+      await bumpClosetRevision(user.id).catch(() => null);
       setSelectedItems([]);
       setEditMode(false);
       fetchWardrobe();
@@ -332,6 +455,7 @@ export default function ClosetScreen() {
         subtitle={topBarSubtitle}
         avatarUri={avatarUri}
         onPressProfile={() => navigation.navigate('Profile')}
+        onPressSaved={() => navigation.navigate('SavedOutfits')}
         onPressSettings={() => navigation.navigate('Settings')}
       />
 

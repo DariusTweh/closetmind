@@ -7,7 +7,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
-    <string>Closana</string>
+    <string>Klozu</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -27,14 +27,14 @@
       <dict>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>closana</string>
+          <string>klozu</string>
           <string>com.dariustweh.closana</string>
         </array>
       </dict>
       <dict>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>exp+closana</string>
+          <string>exp+klozu</string>
         </array>
       </dict>
     </array>
@@ -54,19 +54,19 @@
       <true/>
     </dict>
     <key>NSCameraUsageDescription</key>
-    <string>Closana uses your camera so you can capture wardrobe items directly.</string>
+    <string>Klozu uses your camera so you can capture wardrobe items directly.</string>
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your location</string>
     <key>NSLocationAlwaysUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your location</string>
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>Closana uses your location to personalize weather-aware outfit recommendations.</string>
+    <string>Klozu uses your location to personalize weather-aware outfit recommendations.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your microphone</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to save photos</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>Closana uses your photo library so you can upload closet items, onboarding outfit photos, and profile images.</string>
+    <string>Klozu uses your photo library so you can upload closet items, onboarding outfit photos, and profile images.</string>
     <key>RCTNewArchEnabled</key>
     <true/>
     <key>UILaunchStoryboardName</key>

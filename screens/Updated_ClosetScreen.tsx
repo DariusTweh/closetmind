@@ -16,6 +16,24 @@ import LoadingSkeleton from '../components/Closet/LoadingSkeleton';
 
 const HARDCODED_USER_ID = 'e4679c16-7ee2-4db8-8bc5-6e78642537e8';
 const MAIN_CATEGORIES = ['top', 'bottom', 'shoes', 'outerwear', 'accessory', 'layer', 'onepiece'];
+const WARDROBE_SELECT_FIELDS = [
+  'id',
+  'name',
+  'type',
+  'main_category',
+  'primary_color',
+  'secondary_colors',
+  'pattern_description',
+  'vibe_tags',
+  'season',
+  'image_url',
+  'thumbnail_url',
+  'display_image_url',
+  'image_path',
+  'listed',
+  'is_listed',
+  'created_at',
+].join(', ');
 
 export default function ClosetScreen() {
   const [wardrobe, setWardrobe] = useState([]);
@@ -41,7 +59,7 @@ export default function ClosetScreen() {
     setLoading(true);
     const { data, error } = await supabase
       .from('wardrobe')
-      .select('*')
+      .select(WARDROBE_SELECT_FIELDS)
       .eq('user_id', HARDCODED_USER_ID);
 
     if (!error) setWardrobe(data || []);

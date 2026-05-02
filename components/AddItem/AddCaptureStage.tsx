@@ -81,7 +81,7 @@ export default function AddCaptureStage({
               <Ionicons name="camera-outline" size={36} color="#1c1c1c" />
               <Text style={styles.permissionTitle}>Camera access needed</Text>
               <Text style={styles.permissionText}>
-                Turn on camera access to digitize pieces directly inside ClosetMind.
+                Turn on camera access to digitize pieces directly inside Klozu.
               </Text>
               {canAskForPermission ? (
                 <TouchableOpacity style={styles.permissionButton} onPress={onRequestPermission} activeOpacity={0.82}>

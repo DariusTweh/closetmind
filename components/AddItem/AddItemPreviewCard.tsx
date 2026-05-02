@@ -121,7 +121,7 @@ export default function AddItemPreviewCard({
           </View>
           <Text style={styles.emptyTitle}>Capture your next piece</Text>
           <Text style={styles.emptyText}>
-            Snap a quick photo or pull one from your camera roll, then save it straight into ClosetMind.
+            Snap a quick photo or pull one from your camera roll, then save it straight into Klozu.
           </Text>
         </View>
       )}

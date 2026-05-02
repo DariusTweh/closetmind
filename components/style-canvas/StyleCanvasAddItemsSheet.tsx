@@ -2,7 +2,6 @@ import React from 'react';
 import {
   Image,
   Modal,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,6 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { BrowserItem, WardrobeCanvasSourceItem } from '../../types/styleCanvas';
 
@@ -18,6 +18,7 @@ type AddSource = 'closet' | 'browser' | 'url';
 type StyleCanvasAddItemsSheetProps = {
   visible: boolean;
   source: AddSource;
+  availableSources?: AddSource[];
   onChangeSource: (source: AddSource) => void;
   onClose: () => void;
   closetItems: WardrobeCanvasSourceItem[];
@@ -69,6 +70,7 @@ function SelectableAssetCard({
   subtitle,
   price,
   imageUrl,
+  isCutout = false,
   selected,
   onPress,
 }: {
@@ -76,12 +78,17 @@ function SelectableAssetCard({
   subtitle: string;
   price?: string | null;
   imageUrl?: string | null;
+  isCutout?: boolean;
   selected: boolean;
   onPress: () => void;
 }) {
   return (
     <TouchableOpacity activeOpacity={0.92} style={[styles.assetCard, selected && styles.assetCardSelected]} onPress={onPress}>
-      {imageUrl ? <Image source={{ uri: imageUrl }} style={styles.assetImage} /> : <View style={styles.assetImagePlaceholder} />}
+      {imageUrl ? (
+        <Image source={{ uri: imageUrl }} style={styles.assetImage} resizeMode={isCutout ? 'contain' : 'cover'} />
+      ) : (
+        <View style={styles.assetImagePlaceholder} />
+      )}
       <View style={styles.assetMeta}>
         <Text numberOfLines={2} style={styles.assetTitle}>
           {title}
@@ -101,6 +108,7 @@ function SelectableAssetCard({
 export default function StyleCanvasAddItemsSheet({
   visible,
   source,
+  availableSources = ['closet', 'browser', 'url'],
   onChangeSource,
   onClose,
   closetItems,
@@ -118,6 +126,8 @@ export default function StyleCanvasAddItemsSheet({
   onSubmitPasteUrl,
   isSubmittingUrl,
 }: StyleCanvasAddItemsSheetProps) {
+  const sourceOptions = availableSources.length ? availableSources : ['closet'];
+  const isClosetOnly = sourceOptions.length === 1 && sourceOptions[0] === 'closet';
   const selectedCount =
     source === 'closet'
       ? Object.keys(selectedClosetIds).filter((key) => selectedClosetIds[key]).length
@@ -139,19 +149,29 @@ export default function StyleCanvasAddItemsSheet({
       <SafeAreaView style={styles.container}>
         <View style={styles.header}>
           <View>
-            <Text style={styles.title}>Add Items</Text>
-            <Text style={styles.subtitle}>Keep building without leaving the canvas.</Text>
+            <Text style={styles.title}>{isClosetOnly ? 'Add Closet Pieces' : 'Add Items'}</Text>
+            <Text style={styles.subtitle}>
+              {isClosetOnly ? 'Pull pieces straight from your closet into the board.' : 'Keep building without leaving the canvas.'}
+            </Text>
           </View>
           <TouchableOpacity style={styles.closeButton} onPress={onClose}>
             <Ionicons name="close" size={20} color="#1c1c1c" />
           </TouchableOpacity>
         </View>
 
-        <View style={styles.sourceRow}>
-          <SourceChip icon="shirt-outline" label="Closet" active={source === 'closet'} onPress={() => onChangeSource('closet')} />
-          <SourceChip icon="globe-outline" label="Browser Items" active={source === 'browser'} onPress={() => onChangeSource('browser')} />
-          <SourceChip icon="link-outline" label="Paste URL" active={source === 'url'} onPress={() => onChangeSource('url')} />
-        </View>
+        {sourceOptions.length > 1 ? (
+          <View style={styles.sourceRow}>
+            {sourceOptions.includes('closet') ? (
+              <SourceChip icon="shirt-outline" label="Closet" active={source === 'closet'} onPress={() => onChangeSource('closet')} />
+            ) : null}
+            {sourceOptions.includes('browser') ? (
+              <SourceChip icon="globe-outline" label="Browser Items" active={source === 'browser'} onPress={() => onChangeSource('browser')} />
+            ) : null}
+            {sourceOptions.includes('url') ? (
+              <SourceChip icon="link-outline" label="Paste URL" active={source === 'url'} onPress={() => onChangeSource('url')} />
+            ) : null}
+          </View>
+        ) : null}
 
         {source === 'url' ? (
           <View style={styles.urlPane}>
@@ -178,7 +198,8 @@ export default function StyleCanvasAddItemsSheet({
               const subtitle = 'name' in item
                 ? [item.brand, item.main_category || item.type].filter(Boolean).join(' · ') || 'Ready from your closet'
                 : [item.brand, item.retailer].filter(Boolean).join(' · ') || 'Available from this browser session';
-              const imageUrl = item.cutout_url || item.image_url || null;
+              const cutoutUrl = item.cutout_url || ('cutout_image_url' in item ? item.cutout_image_url : null) || null;
+              const imageUrl = cutoutUrl || item.image_url || null;
 
               return (
                 <SelectableAssetCard
@@ -187,6 +208,7 @@ export default function StyleCanvasAddItemsSheet({
                   subtitle={subtitle}
                   price={formatPrice(item.price)}
                   imageUrl={imageUrl}
+                  isCutout={Boolean(cutoutUrl)}
                   selected={selected}
                   onPress={() =>
                     source === 'closet' ? onToggleClosetItem(item.id) : onToggleBrowserItem(item.id)

@@ -9,33 +9,136 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as Updates from 'expo-updates';
 import { apiPost } from '../lib/api';
+import {
+  DEFAULT_FIT_CHECK_NOTIFICATION_PREFERENCES,
+  describePushRegistrationFailure,
+  loadFitCheckNotificationPreferences,
+  syncFitCheckPushRegistration,
+  updateFitCheckNotificationPreferences,
+} from '../lib/fitCheckNotifications';
+import {
+  loadCurrentProfilePrivacySettings,
+  updateCurrentProfilePrivacySettings,
+} from '../lib/profilePrivacy';
 import { supabase } from '../lib/supabase';
 import { colors, spacing, typography } from '../lib/theme';
 import SettingsInfoFooter from '../components/Settings/SettingsInfoFooter';
 import SettingsRow from '../components/Settings/SettingsRow';
 import SettingsSection from '../components/Settings/SettingsSection';
 import SettingsToggleRow from '../components/Settings/SettingsToggleRow';
+import { getBlockedFitCheckUserCount } from '../lib/fitCheckSafetyService';
+import { getFollowerCount } from '../services/followService';
+import { useRevenueCat } from '../providers/RevenueCatProvider';
 
 function fallbackComingSoon(label: string, detail?: string) {
   Alert.alert(label, detail || 'This setting will be wired in a later pass.');
 }
 
+let SETTINGS_SCREEN_CACHE: {
+  user: any | null;
+  profileUsername: string;
+} | null = null;
+
 export default function SettingsScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const {
+    currentPlanLabel,
+    restorePurchases,
+    presentCustomerCenter,
+    entitlementId,
+    isPro,
+  } = useRevenueCat();
 
   const [darkMode, setDarkMode] = React.useState(false);
-  const [pushNotifications, setPushNotifications] = React.useState(true);
-  const [outfitSuggestions, setOutfitSuggestions] = React.useState(true);
-  const [listingActivity, setListingActivity] = React.useState(true);
-  const [socialActivity, setSocialActivity] = React.useState(false);
-  const [loading, setLoading] = React.useState(true);
+  const [notificationPrefs, setNotificationPrefs] = React.useState(DEFAULT_FIT_CHECK_NOTIFICATION_PREFERENCES);
+  const [notificationSaving, setNotificationSaving] = React.useState(false);
+  const [privacySaving, setPrivacySaving] = React.useState(false);
+  const [privateProfileEnabled, setPrivateProfileEnabled] = React.useState(false);
+  const [publicClosetEnabled, setPublicClosetEnabled] = React.useState(false);
+  const [loading, setLoading] = React.useState(!SETTINGS_SCREEN_CACHE);
   const [loggingOut, setLoggingOut] = React.useState(false);
-  const [user, setUser] = React.useState<any>(null);
-  const [profileUsername, setProfileUsername] = React.useState('');
+  const [user, setUser] = React.useState<any>(SETTINGS_SCREEN_CACHE?.user ?? null);
+  const [profileUsername, setProfileUsername] = React.useState(SETTINGS_SCREEN_CACHE?.profileUsername ?? '');
+  const [blockedUsersCount, setBlockedUsersCount] = React.useState(0);
+  const [followersCount, setFollowersCount] = React.useState(0);
+  const pushNotificationsEnabled = React.useMemo(
+    () =>
+      notificationPrefs.daily_fit_check_reminder ||
+      notificationPrefs.reactions ||
+      notificationPrefs.style_notes ||
+      notificationPrefs.follows ||
+      notificationPrefs.saves_recreates,
+    [notificationPrefs],
+  );
+
+  const refreshNotificationPrefs = React.useCallback(async () => {
+    try {
+      const nextPrefs = await loadFitCheckNotificationPreferences();
+      setNotificationPrefs(nextPrefs);
+    } catch (error) {
+      console.warn('Notification preferences load failed:', error);
+      setNotificationPrefs(DEFAULT_FIT_CHECK_NOTIFICATION_PREFERENCES);
+    }
+  }, []);
+
+  const applyNotificationPrefs = React.useCallback(
+    async (patch: Partial<typeof DEFAULT_FIT_CHECK_NOTIFICATION_PREFERENCES>) => {
+      setNotificationSaving(true);
+      try {
+        const nextPrefs = await updateFitCheckNotificationPreferences(patch);
+        setNotificationPrefs(nextPrefs);
+      } catch (error: any) {
+        Alert.alert('Could not update notifications', String(error?.message || 'Try again in a moment.'));
+      } finally {
+        setNotificationSaving(false);
+      }
+    },
+    [],
+  );
+
+  const handleTogglePrivateProfile = React.useCallback(
+    async (nextValue: boolean) => {
+      const previousValue = privateProfileEnabled;
+      setPrivateProfileEnabled(nextValue);
+      setPrivacySaving(true);
+      try {
+        const updated = await updateCurrentProfilePrivacySettings({
+          profileVisibility: nextValue ? 'private' : 'public',
+        });
+        setPrivateProfileEnabled(updated.profileVisibility === 'private');
+      } catch (error: any) {
+        setPrivateProfileEnabled(previousValue);
+        Alert.alert('Could not update profile privacy', String(error?.message || 'Try again in a moment.'));
+      } finally {
+        setPrivacySaving(false);
+      }
+    },
+    [privateProfileEnabled],
+  );
+
+  const handleTogglePublicCloset = React.useCallback(
+    async (nextValue: boolean) => {
+      const previousValue = publicClosetEnabled;
+      setPublicClosetEnabled(nextValue);
+      setPrivacySaving(true);
+      try {
+        const updated = await updateCurrentProfilePrivacySettings({
+          publicClosetEnabled: nextValue,
+        });
+        setPublicClosetEnabled(Boolean(updated.publicClosetEnabled));
+      } catch (error: any) {
+        setPublicClosetEnabled(previousValue);
+        Alert.alert('Could not update public closet', String(error?.message || 'Try again in a moment.'));
+      } finally {
+        setPrivacySaving(false);
+      }
+    },
+    [publicClosetEnabled],
+  );
 
   React.useEffect(() => {
     let mounted = true;
@@ -55,11 +158,28 @@ export default function SettingsScreen() {
       const { data, error } = await supabase.auth.getUser();
       if (!mounted) return;
       if (error || !data?.user) {
+        SETTINGS_SCREEN_CACHE = null;
         navigation.reset({ index: 0, routes: [{ name: 'Login' as never }] as never });
         return;
       }
       setUser(data.user);
-      await loadProfileHandle(data.user.id);
+      const [_, blockedCount, followerCount, nextNotificationPrefs, nextPrivacySettings] = await Promise.all([
+        loadProfileHandle(data.user.id),
+        getBlockedFitCheckUserCount(),
+        getFollowerCount(),
+        loadFitCheckNotificationPreferences().catch(() => DEFAULT_FIT_CHECK_NOTIFICATION_PREFERENCES),
+        loadCurrentProfilePrivacySettings().catch(() => ({
+          profileVisibility: 'public' as const,
+          publicClosetEnabled: false,
+        })),
+      ]);
+      if (mounted) {
+        setBlockedUsersCount(blockedCount);
+        setFollowersCount(followerCount);
+        setNotificationPrefs(nextNotificationPrefs);
+        setPrivateProfileEnabled(nextPrivacySettings.profileVisibility === 'private');
+        setPublicClosetEnabled(Boolean(nextPrivacySettings.publicClosetEnabled));
+      }
       if (mounted) setLoading(false);
     };
 
@@ -67,6 +187,7 @@ export default function SettingsScreen() {
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!session?.user) {
+        SETTINGS_SCREEN_CACHE = null;
         navigation.reset({ index: 0, routes: [{ name: 'Login' as never }] as never });
       } else {
         setUser(session.user);
@@ -78,6 +199,46 @@ export default function SettingsScreen() {
       sub?.subscription?.unsubscribe();
     };
   }, [navigation]);
+
+  React.useEffect(() => {
+    if (loading && !user && !profileUsername) return;
+    SETTINGS_SCREEN_CACHE = {
+      user: user ?? null,
+      profileUsername: String(profileUsername || '').trim(),
+    };
+  }, [loading, profileUsername, user]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let active = true;
+
+      const refreshCounts = async () => {
+        const [blockedCount, followerCount, nextNotificationPrefs, nextPrivacySettings] = await Promise.all([
+          getBlockedFitCheckUserCount(),
+          getFollowerCount(),
+          loadFitCheckNotificationPreferences().catch(() => DEFAULT_FIT_CHECK_NOTIFICATION_PREFERENCES),
+          loadCurrentProfilePrivacySettings().catch(() => ({
+            profileVisibility: 'public' as const,
+            publicClosetEnabled: false,
+          })),
+        ]);
+        if (!active) return;
+        setBlockedUsersCount(blockedCount);
+        setFollowersCount(followerCount);
+        setNotificationPrefs(nextNotificationPrefs);
+        setPrivateProfileEnabled(nextPrivacySettings.profileVisibility === 'private');
+        setPublicClosetEnabled(Boolean(nextPrivacySettings.publicClosetEnabled));
+      };
+
+      if (user?.id) {
+        void refreshCounts();
+      }
+
+      return () => {
+        active = false;
+      };
+    }, [user?.id]),
+  );
 
   const handleLogout = async () => {
     if (loggingOut) return;
@@ -122,6 +283,36 @@ export default function SettingsScreen() {
     ]);
   };
 
+  const handleOpenSubscriptionHub = React.useCallback(() => {
+    navigation.navigate('Subscription' as never);
+  }, [navigation]);
+
+  const handleManageSubscription = React.useCallback(async () => {
+    try {
+      await presentCustomerCenter();
+    } catch (error: any) {
+      Alert.alert(
+        'Customer Center unavailable',
+        error?.message || 'We could not open Customer Center right now.'
+      );
+    }
+  }, [presentCustomerCenter]);
+
+  const handleRestorePurchases = React.useCallback(async () => {
+    try {
+      const info = await restorePurchases();
+      const unlocked = Boolean(info?.entitlements.active?.[entitlementId]?.isActive);
+      Alert.alert(
+        unlocked ? 'Purchases restored' : 'Nothing to restore',
+        unlocked
+          ? `Your ${entitlementId} entitlement is active on this account.`
+          : `No active ${entitlementId} entitlement was restored.`
+      );
+    } catch (error: any) {
+      Alert.alert('Restore failed', error?.message || 'Please try again.');
+    }
+  }, [entitlementId, restorePurchases]);
+
   const handleChangePassword = async () => {
     if (Platform.OS === 'ios' && typeof Alert.prompt === 'function') {
       Alert.prompt('Change Password', 'Enter a new password', async (pwd) => {
@@ -141,6 +332,59 @@ export default function SettingsScreen() {
       'A dedicated password management flow will be added for non-iOS devices.'
     );
   };
+
+  const handleTogglePushNotifications = React.useCallback(
+    async (nextValue: boolean) => {
+      if (!nextValue) {
+        await applyNotificationPrefs({
+          daily_fit_check_reminder: false,
+          reactions: false,
+          style_notes: false,
+          follows: false,
+          saves_recreates: false,
+        });
+        return;
+      }
+
+      const registration = await syncFitCheckPushRegistration({ requestPermission: true });
+      if (!registration.enabled) {
+        const failure = describePushRegistrationFailure(registration);
+        Alert.alert(
+          failure?.title || 'Push setup failed',
+          failure?.message || 'Push notifications could not be enabled right now.',
+        );
+        return;
+      }
+
+      await refreshNotificationPrefs();
+      await applyNotificationPrefs({
+        reactions: true,
+        style_notes: true,
+        follows: true,
+        saves_recreates: true,
+      });
+    },
+    [applyNotificationPrefs, refreshNotificationPrefs],
+  );
+
+  const handleNotificationPreferenceToggle = React.useCallback(
+    async (key: keyof typeof DEFAULT_FIT_CHECK_NOTIFICATION_PREFERENCES, nextValue: boolean) => {
+      if (nextValue && !pushNotificationsEnabled) {
+        const registration = await syncFitCheckPushRegistration({ requestPermission: true });
+        if (!registration.enabled) {
+          const failure = describePushRegistrationFailure(registration);
+          Alert.alert(
+            failure?.title || 'Push setup failed',
+            failure?.message || 'Push notifications could not be enabled right now.',
+          );
+          return;
+        }
+      }
+
+      await applyNotificationPrefs({ [key]: nextValue });
+    },
+    [applyNotificationPrefs, pushNotificationsEnabled],
+  );
 
   const versionLabel = React.useMemo(
     () => String(Updates.runtimeVersion || (Updates.updateId ? 'OTA build' : 'Local build')),
@@ -185,7 +429,7 @@ export default function SettingsScreen() {
           />
           <SettingsRow
             label="Log Out"
-            description="Sign out of ClosetMind on this device."
+            description="Sign out of Klozu on this device."
             onPress={handleLogout}
             isLast={false}
             disabled={loggingOut}
@@ -204,17 +448,23 @@ export default function SettingsScreen() {
           title="Profile & Social"
           subtitle="Structure your account for public profile features as they roll out."
         >
-          <SettingsRow
-            label="Profile Visibility"
-            description="Control who can discover your profile."
-            value="Private"
-            onPress={() => fallbackComingSoon('Profile Visibility')}
+          <SettingsToggleRow
+            label="Private Profile"
+            description="Hide your profile from public discovery and public profile views."
+            value={privateProfileEnabled}
+            onValueChange={(nextValue) => {
+              void handleTogglePrivateProfile(nextValue);
+            }}
+            disabled={privacySaving}
           />
-          <SettingsRow
+          <SettingsToggleRow
             label="Public Closet"
-            description="Decide whether others can browse your public wardrobe."
-            value="Off"
-            onPress={() => fallbackComingSoon('Public Closet')}
+            description="Store the preference for whether your wardrobe can be browsed publicly."
+            value={publicClosetEnabled}
+            onValueChange={(nextValue) => {
+              void handleTogglePublicCloset(nextValue);
+            }}
+            disabled={privacySaving}
           />
           <SettingsRow
             label="Username / Handle"
@@ -224,8 +474,15 @@ export default function SettingsScreen() {
           />
           <SettingsRow
             label="Blocked Users"
-            description="Manage future social account restrictions."
-            onPress={() => fallbackComingSoon('Blocked Users')}
+            description="Review and unblock people you’ve removed from Fit Check."
+            value={blockedUsersCount > 0 ? String(blockedUsersCount) : undefined}
+            onPress={() => navigation.navigate('BlockedUsers' as never)}
+          />
+          <SettingsRow
+            label="Remove Followers"
+            description="Manage who is allowed to keep following your fits."
+            value={followersCount > 0 ? String(followersCount) : undefined}
+            onPress={() => navigation.navigate('ManageFollowers' as never)}
             isLast
           />
         </SettingsSection>
@@ -294,27 +551,51 @@ export default function SettingsScreen() {
         >
           <SettingsToggleRow
             label="Push Notifications"
-            description="Master switch for app alerts."
-            value={pushNotifications}
-            onValueChange={setPushNotifications}
+            description="Enable Fit Check push delivery on this device."
+            value={pushNotificationsEnabled}
+            onValueChange={(nextValue) => {
+              void handleTogglePushNotifications(nextValue);
+            }}
           />
           <SettingsToggleRow
-            label="Outfit Suggestions"
-            description="Receive styling nudges and closet prompts."
-            value={outfitSuggestions}
-            onValueChange={setOutfitSuggestions}
+            label="Daily Fit Check"
+            description="Optional daily reminder. Off by default until you opt in."
+            value={notificationPrefs.daily_fit_check_reminder}
+            onValueChange={(nextValue) => {
+              void handleNotificationPreferenceToggle('daily_fit_check_reminder', nextValue);
+            }}
           />
           <SettingsToggleRow
-            label="Listing Activity"
-            description="Alerts for marketplace events and item movement."
-            value={listingActivity}
-            onValueChange={setListingActivity}
+            label="Reactions"
+            description="Someone reacted to your fit."
+            value={notificationPrefs.reactions}
+            onValueChange={(nextValue) => {
+              void handleNotificationPreferenceToggle('reactions', nextValue);
+            }}
           />
           <SettingsToggleRow
-            label="Social Activity"
-            description="Future alerts for follows, likes, and profile actions."
-            value={socialActivity}
-            onValueChange={setSocialActivity}
+            label="Style Notes"
+            description="Someone left a style note on your fit."
+            value={notificationPrefs.style_notes}
+            onValueChange={(nextValue) => {
+              void handleNotificationPreferenceToggle('style_notes', nextValue);
+            }}
+          />
+          <SettingsToggleRow
+            label="New Followers"
+            description="Get notified when someone follows you."
+            value={notificationPrefs.follows}
+            onValueChange={(nextValue) => {
+              void handleNotificationPreferenceToggle('follows', nextValue);
+            }}
+          />
+          <SettingsToggleRow
+            label="Saves & Recreates"
+            description="Your public fit inspired someone."
+            value={notificationPrefs.saves_recreates}
+            onValueChange={(nextValue) => {
+              void handleNotificationPreferenceToggle('saves_recreates', nextValue);
+            }}
             isLast
           />
         </SettingsSection>
@@ -348,24 +629,32 @@ export default function SettingsScreen() {
 
         <SettingsSection
           title="Subscription / Billing"
-          subtitle="Prepare the account for monetization and usage tracking."
+          subtitle="RevenueCat billing, paywalls, entitlement state, and Customer Center."
         >
           <SettingsRow
             label="Current Plan"
-            description="Your current ClosetMind tier."
-            value="Free"
-            disabled
+            description="Your current Klozu tier."
+            value={currentPlanLabel}
+            onPress={handleOpenSubscriptionHub}
           />
           <SettingsRow
-            label="Manage Subscription"
-            description="Upgrade, downgrade, or manage billing."
-            onPress={() => fallbackComingSoon('Manage Subscription')}
+            label="Open Subscription Hub"
+            description={
+              isPro
+                ? 'Review Klozu Premium details and subscription status.'
+                : 'Open the custom Klozu Premium paywall.'
+            }
+            onPress={handleOpenSubscriptionHub}
           />
           <SettingsRow
-            label="Try-On Credits"
-            description="Future usage tracking for AI-powered experiences."
-            value="Included"
-            onPress={() => fallbackComingSoon('Try-On Credits')}
+            label="Restore Purchases"
+            description="Restore purchases tied to the current store account."
+            onPress={handleRestorePurchases}
+          />
+          <SettingsRow
+            label="Open Customer Center"
+            description="Manage billing and subscription settings with RevenueCat."
+            onPress={handleManageSubscription}
             isLast
           />
         </SettingsSection>
@@ -381,7 +670,7 @@ export default function SettingsScreen() {
           />
           <SettingsRow
             label="Contact Support"
-            description="Reach the ClosetMind support team."
+            description="Reach the Klozu support team."
             onPress={() => fallbackComingSoon('Contact Support')}
           />
           <SettingsRow
@@ -439,7 +728,7 @@ export default function SettingsScreen() {
           />
         </SettingsSection>
 
-        <SettingsInfoFooter text="ClosetMind settings are structured for account controls today and public-profile, commerce, and notification systems later." />
+        <SettingsInfoFooter text="Klozu settings are structured for account controls today and public-profile, commerce, and notification systems later." />
       </ScrollView>
     </SafeAreaView>
   );

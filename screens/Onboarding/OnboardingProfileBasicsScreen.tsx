@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import AuthTextField from '../../components/Auth/AuthTextField';
+import { ONBOARDING_STAGES, updateOnboardingProgress } from '../../lib/onboarding';
 import OnboardingScaffold from '../../components/Onboarding/OnboardingScaffold';
 import { supabase } from '../../lib/supabase';
 import { colors, spacing, typography } from '../../lib/theme';
@@ -115,6 +116,7 @@ export default function OnboardingProfileBasicsScreen() {
         .eq('id', userId);
 
       if (updateError) throw updateError;
+      await updateOnboardingProgress(userId, { stage: ONBOARDING_STAGES.USE_INTENT });
 
       navigation.navigate('UseIntent');
     } catch (error: any) {

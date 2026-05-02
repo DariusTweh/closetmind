@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import OnboardingChoiceCard from '../../components/Onboarding/OnboardingChoiceCard';
 import OnboardingScaffold from '../../components/Onboarding/OnboardingScaffold';
+import { ONBOARDING_STAGES, updateOnboardingProgress } from '../../lib/onboarding';
 import { supabase } from '../../lib/supabase';
 import { colors, spacing, typography } from '../../lib/theme';
 
@@ -15,7 +16,7 @@ const OPTIONS = [
   {
     id: 'sell',
     label: 'Selling clothes too',
-    description: 'Use ClosetMind to manage what you own and what you may want to resell.',
+    description: 'Use Klozu to manage what you own and what you may want to resell.',
   },
   {
     id: 'both',
@@ -26,7 +27,42 @@ const OPTIONS = [
 
 export default function UseIntentScreen() {
   const navigation = useNavigation<any>();
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrate = async () => {
+      try {
+        const { data, error } = await supabase.auth.getUser();
+        if (error || !data?.user) {
+          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+          return;
+        }
+
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('use_intent')
+          .eq('id', data.user.id)
+          .maybeSingle();
+
+        if (profileError) throw profileError;
+        if (!cancelled) {
+          setSelected(String(profile?.use_intent || '').trim() || null);
+        }
+      } catch (error) {
+        console.error('Load onboarding use intent failed:', error);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [navigation]);
 
   const handleNext = async () => {
     try {
@@ -41,6 +77,7 @@ export default function UseIntentScreen() {
         .eq('id', userId);
 
       if (updateError) throw updateError;
+      await updateOnboardingProgress(userId, { stage: ONBOARDING_STAGES.STYLE_VIBE });
 
       navigation.navigate('StyleVibe' as never);
     } catch (err) {
@@ -49,10 +86,24 @@ export default function UseIntentScreen() {
     }
   };
 
+  if (loading) {
+    return (
+      <OnboardingScaffold
+        step="Step 2 of 6"
+        title="What should Klozu optimize for first?"
+        subtitle="This shapes how the app prioritizes verdicts, styling, and marketplace context from day one."
+      >
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator size="large" color={colors.textPrimary} />
+        </View>
+      </OnboardingScaffold>
+    );
+  }
+
   return (
     <OnboardingScaffold
       step="Step 2 of 6"
-      title="What should ClosetMind optimize for first?"
+      title="What should Klozu optimize for first?"
       subtitle="This shapes how the app prioritizes verdicts, styling, and marketplace context from day one."
       footer={
         <TouchableOpacity
@@ -81,6 +132,11 @@ export default function UseIntentScreen() {
 }
 
 const styles = StyleSheet.create({
+  loadingWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   stack: {
     gap: spacing.md - 2,
   },

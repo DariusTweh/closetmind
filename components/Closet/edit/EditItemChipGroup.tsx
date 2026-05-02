@@ -2,27 +2,31 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { typography } from '../../../lib/theme';
 
+type ChipOption = string | { value: string; label: string };
+
 export default function EditItemChipGroup({
   options,
   value,
   onChange,
 }: {
-  options: string[];
+  options: ReadonlyArray<ChipOption>;
   value: string;
   onChange: (next: string) => void;
 }) {
   return (
     <View style={styles.wrap}>
       {options.map((option) => {
-        const active = value === option;
+        const optionValue = typeof option === 'string' ? option : option.value;
+        const optionLabel = typeof option === 'string' ? option : option.label;
+        const active = value === optionValue;
         return (
           <TouchableOpacity
-            key={option}
+            key={optionValue}
             activeOpacity={0.84}
-            onPress={() => onChange(option)}
+            onPress={() => onChange(optionValue)}
             style={[styles.chip, active && styles.chipActive]}
           >
-            <Text style={[styles.chipText, active && styles.chipTextActive]}>{option}</Text>
+            <Text style={[styles.chipText, active && styles.chipTextActive]}>{optionLabel}</Text>
           </TouchableOpacity>
         );
       })}

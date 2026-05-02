@@ -1,7 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { spacing } from '../../lib/theme';
-import { editorialPalette, editorialShadow } from '../../lib/editorialTheme';
+import { editorialPalette } from '../../lib/editorialTheme';
 
 type Props = {
   canStyle: boolean;
@@ -25,23 +25,25 @@ export default function VerdictActionsBar({
   return (
     <View style={styles.container}>
       <View style={styles.actionCard}>
-        <TouchableOpacity
-          style={[styles.primaryButton, !canStyle && styles.buttonDisabled]}
-          disabled={!canStyle}
-          onPress={onStyle}
-        >
-          <Text style={styles.primaryButtonText}>Style This Item</Text>
-        </TouchableOpacity>
+        <View style={styles.topRow}>
+          <TouchableOpacity
+            style={[styles.primaryButton, !canStyle && styles.buttonDisabled]}
+            disabled={!canStyle}
+            onPress={onStyle}
+          >
+            <Text style={styles.primaryButtonText}>Style This Item</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.secondaryButton, !canTryOn && styles.secondaryButtonDisabled]}
-          disabled={!canTryOn}
-          onPress={onTryOn}
-        >
-          <Text style={[styles.secondaryButtonText, !canTryOn && styles.secondaryButtonTextDisabled]}>
-            Try It On
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.secondaryButton, !canTryOn && styles.secondaryButtonDisabled]}
+            disabled={!canTryOn}
+            onPress={onTryOn}
+          >
+            <Text style={[styles.secondaryButtonText, !canTryOn && styles.secondaryButtonTextDisabled]}>
+              Try It On
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.saveRow}>
           <Text style={styles.saveStateText}>
@@ -73,13 +75,19 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xl,
   },
   actionCard: {
-    backgroundColor: editorialPalette.surfaceContainer,
-    borderRadius: 14,
+    backgroundColor: editorialPalette.surfaceContainerLowest,
+    borderRadius: 20,
     padding: spacing.md + 2,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: editorialPalette.outlineGhost,
+  },
+  topRow: {
+    flexDirection: 'row',
     gap: 10,
-    ...editorialShadow,
   },
   primaryButton: {
+    flex: 1,
     backgroundColor: editorialPalette.primary,
     paddingVertical: 15,
     borderRadius: 14,
@@ -87,21 +95,24 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: '#fafaff',
-    fontSize: 15,
+    fontSize: 14.5,
     fontWeight: '700',
   },
   secondaryButton: {
+    flex: 1,
     backgroundColor: editorialPalette.surfaceContainerLowest,
     paddingVertical: 15,
     borderRadius: 14,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: editorialPalette.outlineGhost,
   },
   secondaryButtonDisabled: {
     backgroundColor: editorialPalette.surfaceContainerLow,
   },
   secondaryButtonText: {
     color: editorialPalette.onSurface,
-    fontSize: 15,
+    fontSize: 14.5,
     fontWeight: '700',
   },
   secondaryButtonTextDisabled: {
@@ -112,7 +123,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    paddingTop: 4,
+    paddingTop: 2,
   },
   saveStateText: {
     flex: 1,

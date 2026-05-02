@@ -16,6 +16,13 @@ export type FatePreferences = {
   keywords?: string[] | null;
   preferred_occasions?: string[] | null;
   preferred_formality?: string | null;
+  favorite_categories?: string[] | null;
+  avoided_categories?: string[] | null;
+  preferred_patterns?: string[] | null;
+  avoided_patterns?: string[] | null;
+  avoided_colors?: string[] | null;
+  avoided_vibes?: string[] | null;
+  profile_confidence?: number | null;
 };
 
 export type FateWardrobeItem = {
@@ -309,22 +316,34 @@ export function inferColorDirection(
   wardrobe: FateWardrobeItem[],
   styleSignals: string[],
 ) {
+  const avoidedColors = new Set(
+    toArray(preferences?.avoided_colors)
+      .map((entry) => COLOR_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry))
+      .filter(Boolean),
+  );
   const explicitColors = [
     ...toArray(profile?.color_prefs),
     ...toArray(preferences?.core_colors),
     ...toArray(preferences?.accent_colors),
-  ].map((entry) => COLOR_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry));
+  ]
+    .map((entry) => COLOR_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry))
+    .filter((entry) => entry && !avoidedColors.has(entry));
 
   const wardrobeColors = wardrobe.flatMap((item) => [
     item.primary_color,
     ...toArray(item.secondary_colors),
-  ]).map((entry) => COLOR_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry));
+  ])
+    .map((entry) => COLOR_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry))
+    .filter((entry) => entry && !avoidedColors.has(entry));
 
   const topColors = countTopValues([...explicitColors, ...wardrobeColors], 3);
   if (topColors.length) return topColors;
 
   const firstStyle = styleSignals[0] || 'minimal';
-  return DEFAULT_COLOR_DIRECTIONS[firstStyle] || ['black', 'cream', 'gray'];
+  const fallbackColors = (DEFAULT_COLOR_DIRECTIONS[firstStyle] || ['black', 'cream', 'gray']).filter(
+    (entry) => !avoidedColors.has(entry),
+  );
+  return fallbackColors.length ? fallbackColors : ['black', 'cream', 'gray'];
 }
 
 export function inferFitDirection(
@@ -381,7 +400,8 @@ function buildStyleSignalVariants(styleSignals: string[]) {
     .filter((entry) => entry.length);
 }
 
-function buildColorDirectionCandidates(baseColors: string[], styleSignals: string[]) {
+function buildColorDirectionCandidates(baseColors: string[], styleSignals: string[], blockedColors: string[] = []) {
+  const blocked = new Set(blockedColors.filter(Boolean));
   const colors = uniqueStrings(baseColors.length ? baseColors : ['black', 'cream', 'gray']).slice(0, 3);
   const accent =
     styleSignals.includes('streetwear')
@@ -391,11 +411,14 @@ function buildColorDirectionCandidates(baseColors: string[], styleSignals: strin
         : styleSignals.includes('sporty')
           ? 'navy'
           : colors[2] || 'gray';
+  const safeAccent = blocked.has(accent) ? colors.find((entry) => !blocked.has(entry)) || 'gray' : accent;
 
   const candidates = [
-    colors,
-    rotateArray(colors, 1),
-    uniqueStrings([colors[0], colors[1] || colors[0], accent]).slice(0, 3),
+    colors.filter((entry) => !blocked.has(entry)),
+    rotateArray(colors, 1).filter((entry) => !blocked.has(entry)),
+    uniqueStrings([colors[0], colors[1] || colors[0], safeAccent])
+      .filter((entry) => !blocked.has(entry))
+      .slice(0, 3),
   ];
 
   return uniqueStrings(candidates.map((entry) => entry.join('|')))
@@ -545,6 +568,7 @@ function inferContexts(
   temperature: string,
 ) {
   const temp = Number(temperature);
+  const preferredFormality = normalizeTag(preferences?.preferred_formality);
   const contexts = [
     ...toArray(preferences?.preferred_occasions),
     ...wardrobe.flatMap((item) => toArray(item.occasion_tags)),
@@ -563,6 +587,12 @@ function inferContexts(
   }
   if (styleSignals.includes('streetwear') || styleSignals.includes('relaxed')) {
     contexts.push('class', 'errands', 'weekend', 'everyday');
+  }
+  if (['dressy', 'formal', 'elevated'].includes(preferredFormality)) {
+    contexts.push('dinner', 'date-night', 'social', 'going-out');
+  }
+  if (['casual', 'smart casual', 'smart-casual'].includes(preferredFormality)) {
+    contexts.push('everyday', 'weekend', 'coffee-run', 'errands');
   }
   if (season === 'summer' || temp >= 75) {
     contexts.push('social', 'weekend');
@@ -837,11 +867,13 @@ export function inferAvoidList({
   season,
   temperature,
   colorDirection,
+  preferences,
 }: {
   styleSignals: string[];
   season: string;
   temperature: string;
   colorDirection: string[];
+  preferences?: FatePreferences | null | undefined;
 }) {
   const temp = Number(temperature);
   const avoid = new Set<string>();
@@ -861,7 +893,31 @@ export function inferAvoidList({
     avoid.add('overly formal pieces');
   }
 
-  return [...avoid].slice(0, 4);
+  toArray(preferences?.avoided_colors)
+    .map((entry) => COLOR_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry))
+    .filter(Boolean)
+    .slice(0, 2)
+    .forEach((entry) => avoid.add(`avoid ${entry}`));
+
+  toArray(preferences?.avoided_vibes)
+    .map((entry) => STYLE_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry))
+    .filter(Boolean)
+    .slice(0, 2)
+    .forEach((entry) => avoid.add(`avoid ${entry} styling`));
+
+  toArray(preferences?.avoided_patterns)
+    .map((entry) => normalizeTag(entry))
+    .filter(Boolean)
+    .slice(0, 2)
+    .forEach((entry) => avoid.add(`avoid ${entry} patterns`));
+
+  toArray(preferences?.avoided_categories)
+    .map((entry) => normalizeTag(entry))
+    .filter(Boolean)
+    .slice(0, 2)
+    .forEach((entry) => avoid.add(`avoid extra ${entry}`));
+
+  return [...avoid].slice(0, 6);
 }
 
 function buildMood(styleSignals: string[], colorDirection: string[]) {
@@ -886,6 +942,11 @@ export function buildFateContext({
   modeOverrides?: FateModeOverrides | null;
 }): FateContext {
   const wardrobeItems = Array.isArray(wardrobe) ? wardrobe : [];
+  const avoidedVibes = new Set(
+    toArray(preferences?.avoided_vibes)
+      .map((entry) => STYLE_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry))
+      .filter(Boolean),
+  );
   const rawStyleSignals = [
     ...toArray(profile?.style_tags),
     ...toArray(preferences?.primary_vibes),
@@ -893,7 +954,7 @@ export function buildFateContext({
     ...wardrobeItems.flatMap((item) => toArray(item.vibe_tags)),
   ]
     .map((entry) => STYLE_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry))
-    .filter(Boolean);
+    .filter((entry) => entry && !avoidedVibes.has(entry));
 
   const styleSignals = countTopValues(rawStyleSignals, 4);
   const season = inferSeason(weather || undefined, wardrobeItems);
@@ -903,7 +964,13 @@ export function buildFateContext({
   const inferredContexts = inferContexts(preferences, wardrobeItems, styleSignals, season, temperature);
   const variantIndex = Math.max(0, Number(modeOverrides?.variantIndex || 0));
   const styleVariants = buildStyleSignalVariants(styleSignals);
-  const colorVariants = buildColorDirectionCandidates(baseColorDirection, styleSignals);
+  const colorVariants = buildColorDirectionCandidates(
+    baseColorDirection,
+    styleSignals,
+    toArray(preferences?.avoided_colors)
+      .map((entry) => COLOR_SYNONYMS[normalizeTag(entry)] || normalizeTag(entry))
+      .filter(Boolean),
+  );
   const fitVariants = buildFitDirectionCandidates(baseFitDirection, styleSignals);
   const allCandidates = buildFateCandidates({
     styleVariants,
@@ -957,6 +1024,7 @@ export function buildFateContext({
       season,
       temperature,
       colorDirection: selectedCandidate.colorDirection,
+      preferences,
     }),
     debug: {
       topStyleTags: selectedCandidate.styleSignals,

@@ -16,6 +16,9 @@ export default function OutfitCard({ outfit, onPress, onToggleFavorite }) {
     .filter(Boolean)
     .join(' • ');
   const badges = [
+    outfit.outfit_mode === 'travel' ? 'Travel' : null,
+    outfit.activity_label ? outfit.activity_label : null,
+    outfit.day_label ? outfit.day_label : null,
     outfit.source_kind === 'canvas' ? 'Canvas' : null,
     outfit.has_external_items ? 'Mixed Source' : null,
   ].filter(Boolean);

@@ -9,16 +9,12 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { spacing, typography } from '../../lib/theme';
 
-function getInitial(value?: string | null) {
-  const raw = String(value || '').trim();
-  return raw ? raw.charAt(0).toUpperCase() : 'C';
-}
-
 export default function ProfileHeroCard({
   displayName,
   username,
   bio,
   avatarUrl,
+  styleTags = [],
   onEditPress,
   onSettingsPress,
 }: {
@@ -26,6 +22,7 @@ export default function ProfileHeroCard({
   username?: string | null;
   bio?: string | null;
   avatarUrl?: string | null;
+  styleTags?: string[];
   onEditPress: () => void;
   onSettingsPress: () => void;
 }) {
@@ -39,14 +36,12 @@ export default function ProfileHeroCard({
           {avatarUrl ? (
             <Image source={{ uri: avatarUrl }} style={styles.avatar} />
           ) : (
-            <View style={styles.avatarFallback}>
-              <Text style={styles.avatarInitial}>{getInitial(displayName)}</Text>
-            </View>
+            <View style={styles.avatarFallback} />
           )}
 
           <View style={styles.identityCopy}>
-            <Text style={styles.eyebrow}>Personal profile</Text>
-            <Text style={styles.displayName}>{displayName || 'ClosetMind member'}</Text>
+            <Text style={styles.eyebrow}>Style identity</Text>
+            <Text style={styles.displayName}>{displayName || 'Klozu member'}</Text>
             <Text style={styles.handle}>{handle}</Text>
           </View>
         </View>
@@ -63,6 +58,16 @@ export default function ProfileHeroCard({
       <Text style={[styles.bio, !cleanBio && styles.bioPlaceholder]}>
         {cleanBio || 'No bio yet'}
       </Text>
+
+      {styleTags.length ? (
+        <View style={styles.tagWrap}>
+          {styleTags.slice(0, 4).map((tag) => (
+            <View key={tag} style={styles.tagChip}>
+              <Text style={styles.tagChipText}>{tag}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       <TouchableOpacity
         activeOpacity={0.86}
@@ -104,14 +109,8 @@ const styles = StyleSheet.create({
     height: 88,
     borderRadius: 24,
     backgroundColor: '#eef0f2',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarInitial: {
-    fontSize: 30,
-    fontWeight: '700',
-    color: '#2f2822',
-    fontFamily: typography.fontFamily,
+    borderWidth: 1,
+    borderColor: '#daddd8',
   },
   identityCopy: {
     flex: 1,
@@ -160,6 +159,25 @@ const styles = StyleSheet.create({
   },
   bioPlaceholder: {
     color: '#95897d',
+  },
+  tagWrap: {
+    marginTop: spacing.md,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  tagChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: '#eef0f2',
+  },
+  tagChipText: {
+    fontSize: 12,
+    lineHeight: 15,
+    color: '#1c1c1c',
+    fontWeight: '600',
+    fontFamily: typography.fontFamily,
   },
   editButton: {
     alignSelf: 'flex-start',

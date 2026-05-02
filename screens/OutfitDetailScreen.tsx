@@ -1,15 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView,
-  Alert, ActivityIndicator
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { supabase } from '../lib/supabase';
-import { spacing, typography } from '../lib/theme';
+import OutfitCanvas from '../components/OutfitCanvas/OutfitCanvas';
+import OutfitSummaryCard from '../components/OutfitCanvas/OutfitSummaryCard';
+import WhyItWorksPanel from '../components/OutfitCanvas/WhyItWorksPanel';
 import OutfitDetailActions from '../components/SavedOutfits/OutfitDetailActions';
 import OutfitDetailHeader from '../components/SavedOutfits/OutfitDetailHeader';
-import OutfitDetailItemCard from '../components/SavedOutfits/OutfitDetailItemCard';
+import { buildLegacyCanvasLayoutMap, buildOutfitCanvasItems, buildOutfitCanvasReasons } from '../components/OutfitCanvas/utils';
+import { supabase } from '../lib/supabase';
+import { spacing, typography } from '../lib/theme';
 import { loadSavedOutfitItemsForDetail } from '../services/savedOutfitService';
+import { loadStyleCanvas } from '../services/styleCanvasService';
 
 function buildSubtitle(outfit: any) {
   const context = String(outfit?.context || '').trim().replace(/\s+°F$/i, '').trim();
@@ -21,22 +29,55 @@ function buildSubtitle(outfit: any) {
   return 'Saved from your archive';
 }
 
+function formatSeason(value: any) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  if (normalized.toLowerCase() === 'all') return 'Any season';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
 export default function OutfitDetailScreen({ route, navigation }) {
   const { outfit } = route.params;
   const insets = useSafeAreaInsets();
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState<any[]>([]);
+  const [legacyLayoutMap, setLegacyLayoutMap] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [isFavorited, setIsFavorited] = useState(false);
-  const [userId, setUserId] = useState(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [activeReasonItemId, setActiveReasonItemId] = useState<string | null>(null);
+
   const savedItemCount = useMemo(
-    () => (Array.isArray(outfit?.resolvedItems) ? outfit.resolvedItems.length : Array.isArray(outfit?.items) ? outfit.items.length : 0),
-    [outfit.items, outfit.resolvedItems]
+    () =>
+      Array.isArray(outfit?.resolvedItems)
+        ? outfit.resolvedItems.length
+        : Array.isArray(outfit?.items)
+          ? outfit.items.length
+          : 0,
+    [outfit.items, outfit.resolvedItems],
   );
   const subtitle = useMemo(() => buildSubtitle(outfit), [outfit]);
 
+  const canvasItems = useMemo(
+    () => buildOutfitCanvasItems(items, { legacyLayoutMap }),
+    [items, legacyLayoutMap],
+  );
+  const reasonItems = useMemo(() => buildOutfitCanvasReasons(canvasItems), [canvasItems]);
+  const summaryChips = useMemo(
+    () =>
+      [
+        canvasItems.length ? `${canvasItems.length} pieces` : null,
+        formatSeason(outfit?.season),
+        outfit?.activity_label || null,
+        outfit?.day_label || null,
+      ].filter(Boolean) as string[],
+    [canvasItems.length, outfit?.activity_label, outfit?.day_label, outfit?.season],
+  );
+
   useEffect(() => {
     const init = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) {
         Alert.alert('Error', 'You must be logged in to view this outfit.');
         navigation.goBack();
@@ -45,59 +86,57 @@ export default function OutfitDetailScreen({ route, navigation }) {
       setUserId(user.id);
       await loadItems(user.id);
     };
-    init();
-  }, []);
+    void init();
+  }, [navigation]);
 
-  const loadItems = async (uid) => {
-    // ✅ Check favorite status securely
-    const { data: favorite, error: favoriteError } = await supabase
-      .from('saved_outfits')
-      .select('is_favorite')
-      .eq('id', outfit.id)
-      .eq('user_id', uid)
-      .maybeSingle();
+  const loadItems = useCallback(
+    async (uid: string) => {
+      const { data: favorite, error: favoriteError } = await supabase
+        .from('saved_outfits')
+        .select('is_favorite')
+        .eq('id', outfit.id)
+        .eq('user_id', uid)
+        .maybeSingle();
 
-    if (favoriteError) {
-      console.error('❌ Failed to load favorite state:', favoriteError.message);
-    } else {
-      setIsFavorited(!!favorite?.is_favorite);
-    }
-
-    try {
-      const detailedOutfit = await loadSavedOutfitItemsForDetail({
-        outfit,
-        userId: uid,
-      });
-      setItems(detailedOutfit?.resolvedItems || []);
-    } catch (error: any) {
-      console.error('❌ Failed to load outfit items:', error?.message || error);
-      Alert.alert('Error', 'Could not load outfit details.');
-      setItems(Array.isArray(outfit?.resolvedItems) ? outfit.resolvedItems : Array.isArray(outfit?.items) ? outfit.items : []);
-    }
-
-    setLoading(false);
-  };
-
-  const handleOpenItem = useCallback(
-    (item: any) => {
-      if (!item) return;
-
-      if (item.source_type === 'external') {
-        if (!item.product_url) {
-          Alert.alert('No product link', 'This saved item does not have a product page attached yet.');
-          return;
-        }
-
-        navigation.navigate('ImportBrowser', {
-          initialUrl: item.product_url,
-          initialTitle: item.title || item.name || 'Saved product',
-        });
-        return;
+      if (favoriteError) {
+        console.error('Failed to load favorite state:', favoriteError.message);
+      } else {
+        setIsFavorited(!!favorite?.is_favorite);
       }
 
-      navigation.navigate('StyleItemScreen', { item });
+      try {
+        const detailedOutfit = await loadSavedOutfitItemsForDetail({
+          outfit,
+          userId: uid,
+        });
+        const resolvedItems = detailedOutfit?.resolvedItems || [];
+        const savedItems = Array.isArray(detailedOutfit?.items) ? detailedOutfit.items : Array.isArray(outfit?.items) ? outfit.items : [];
+        const hasSavedLayouts = savedItems.some((entry: any) => entry?.layout);
+
+        setItems(resolvedItems);
+        setActiveReasonItemId(null);
+
+        if (hasSavedLayouts || !detailedOutfit?.canvas_id) {
+          setLegacyLayoutMap({});
+        } else {
+          try {
+            const savedCanvas = await loadStyleCanvas(String(detailedOutfit.canvas_id));
+            setLegacyLayoutMap(buildLegacyCanvasLayoutMap(savedCanvas?.items || []));
+          } catch (canvasError: any) {
+            console.error('Failed to load legacy canvas layout:', canvasError?.message || canvasError);
+            setLegacyLayoutMap({});
+          }
+        }
+      } catch (error: any) {
+        console.error('Failed to load outfit items:', error?.message || error);
+        Alert.alert('Error', 'Could not load outfit details.');
+        setItems(Array.isArray(outfit?.resolvedItems) ? outfit.resolvedItems : Array.isArray(outfit?.items) ? outfit.items : []);
+        setLegacyLayoutMap({});
+      } finally {
+        setLoading(false);
+      }
     },
-    [navigation],
+    [outfit],
   );
 
   const handleDelete = async () => {
@@ -134,7 +173,7 @@ export default function OutfitDetailScreen({ route, navigation }) {
       <OutfitDetailHeader
         title={outfit.name || 'Untitled Fit'}
         subtitle={subtitle}
-        itemCount={items.length || savedItemCount}
+        itemCount={canvasItems.length || savedItemCount}
         season={outfit.season}
         isFavorited={isFavorited}
         onBack={() => navigation.goBack()}
@@ -148,22 +187,41 @@ export default function OutfitDetailScreen({ route, navigation }) {
             <Text style={styles.loadingText}>Loading saved look</Text>
           </View>
         ) : (
-          items.map(item => (
-            <OutfitDetailItemCard key={item.id} item={item} onPress={() => handleOpenItem(item)} />
-          ))
+          <View style={styles.contentStack}>
+            <OutfitSummaryCard
+              eyebrow={outfit?.outfit_mode === 'travel' ? 'Saved travel look' : 'Saved look'}
+              title={outfit.name || 'Untitled Fit'}
+              summary={subtitle}
+              chips={summaryChips}
+            />
+
+            <OutfitCanvas
+              items={canvasItems}
+              imagePreference="display"
+              highlightedItemId={activeReasonItemId}
+              onPressItem={setActiveReasonItemId}
+              emptyLabel="This saved look does not have any visible items yet."
+            />
+
+            <WhyItWorksPanel
+              summary={subtitle}
+              items={reasonItems}
+              activeItemId={activeReasonItemId}
+              onChangeActiveItemId={setActiveReasonItemId}
+            />
+          </View>
         )}
-        <View style={{ height: 24 }} />
+        <View style={styles.bottomSpacer} />
       </ScrollView>
 
       <OutfitDetailActions
-        onTryOn={() => navigation.navigate('TryOn', { items })}
+        onTryOn={() => navigation.navigate('TryOn', { items, savedOutfitId: outfit?.id || null })}
         onDelete={handleDelete}
         disabled={loading || items.length === 0}
       />
     </SafeAreaView>
   );
 }
-
 
 const styles = StyleSheet.create({
   safe: {
@@ -172,7 +230,10 @@ const styles = StyleSheet.create({
   },
   container: {
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
+    paddingTop: spacing.sm,
+  },
+  contentStack: {
+    gap: spacing.md,
   },
   loadingWrap: {
     marginTop: spacing.xl * 1.5,
@@ -183,5 +244,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: 'rgba(28, 28, 28, 0.72)',
     fontFamily: typography.fontFamily,
+  },
+  bottomSpacer: {
+    height: 24,
   },
 });

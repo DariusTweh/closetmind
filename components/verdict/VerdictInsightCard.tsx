@@ -1,33 +1,33 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { GapInsight } from '../../lib/itemVerdict';
 import { spacing } from '../../lib/theme';
-import { editorialPalette, editorialShadow } from '../../lib/editorialTheme';
+import { editorialPalette } from '../../lib/editorialTheme';
+
+type InsightTone = 'positive' | 'warning' | 'neutral';
 
 type Props = {
-  insight: GapInsight;
+  title: string;
+  message: string;
+  tone?: InsightTone;
 };
 
-const INSIGHT_COPY = {
-  gap_fill: {
-    title: 'Gap Fill',
+const PALETTES: Record<InsightTone, { backgroundColor: string; accent: string }> = {
+  positive: {
     backgroundColor: editorialPalette.verdictStrong,
     accent: editorialPalette.onSurface,
   },
-  duplicate_risk: {
-    title: 'Duplicate Risk',
+  warning: {
     backgroundColor: editorialPalette.verdictSkip,
     accent: editorialPalette.error,
   },
   neutral: {
-    title: 'Wardrobe Read',
     backgroundColor: editorialPalette.surfaceContainer,
     accent: editorialPalette.onSurfaceVariant,
   },
-} as const;
+};
 
-export default function VerdictInsightCard({ insight }: Props) {
-  const palette = INSIGHT_COPY[insight.type] || INSIGHT_COPY.neutral;
+export default function VerdictInsightCard({ title, message, tone = 'neutral' }: Props) {
+  const palette = PALETTES[tone] || PALETTES.neutral;
 
   return (
     <View
@@ -38,19 +38,19 @@ export default function VerdictInsightCard({ insight }: Props) {
         },
       ]}
     >
-      <Text style={[styles.eyebrow, { color: palette.accent }]}>{palette.title}</Text>
-      <Text style={styles.message}>{insight.message}</Text>
+      <Text style={[styles.eyebrow, { color: palette.accent }]}>{title}</Text>
+      <Text style={styles.message}>{message}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 14,
+    borderRadius: 20,
     padding: spacing.md + 2,
-    marginBottom: spacing.md + 2,
-    gap: 5,
-    ...editorialShadow,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: editorialPalette.outlineGhost,
   },
   eyebrow: {
     fontSize: 10.5,
@@ -60,7 +60,7 @@ const styles = StyleSheet.create({
   },
   message: {
     color: editorialPalette.onSurface,
-    fontSize: 15,
+    fontSize: 14.5,
     lineHeight: 21,
     fontWeight: '600',
   },

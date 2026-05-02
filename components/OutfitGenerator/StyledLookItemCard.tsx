@@ -11,8 +11,11 @@ type StyledLookItemCardProps = {
 };
 
 function formatRole(mainCategory?: string | null) {
-  const raw = String(mainCategory || '').trim();
+  const raw = String(mainCategory || '').trim().toLowerCase();
   if (!raw) return 'Piece';
+  if (raw === 'base_top') return 'Base';
+  if (raw === 'top_layer') return 'Layer';
+  if (raw === 'onepiece') return 'One-Piece';
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
@@ -28,7 +31,7 @@ export default function StyledLookItemCard({
       <View style={styles.content}>
         <View style={styles.topRow}>
           <View style={styles.roleBadge}>
-            <Text style={styles.roleBadgeText}>{formatRole(item?.main_category)}</Text>
+            <Text style={styles.roleBadgeText}>{formatRole(item?.outfit_role || item?.main_category)}</Text>
           </View>
           {onToggleLock ? (
             <TouchableOpacity

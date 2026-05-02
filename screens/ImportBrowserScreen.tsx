@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react';
+import React, { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import {
   Alert,
   Animated,
@@ -16,7 +16,17 @@ import {
 import { useRoute } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import * as FileSystem from 'expo-file-system/legacy';
-import { apiPost } from '../lib/api';
+import { apiPostWithRateLimitRetry } from '../lib/api';
+import UpgradeLimitModal from '../components/subscriptions/UpgradeLimitModal';
+import { useUpgradeWall } from '../hooks/useUpgradeWall';
+import {
+  buildVerdictCacheItemKey,
+  readCachedVerdict,
+  readClosetRevision,
+} from '../lib/itemVerdictCache';
+import { isSubscriptionLimitError } from '../lib/subscriptions/errors';
+import { buildUpgradeModalState, HIDDEN_UPGRADE_MODAL_STATE } from '../lib/subscriptions/modalState';
+import { canUseFeature } from '../lib/subscriptions/usageService';
 import {
   extractNormalizedTags,
   type TaggingImportContext,
@@ -27,14 +37,30 @@ import {
   buildWardrobeInsertPayloadFromExternalItem,
   isExternalItemLike,
 } from '../lib/wardrobePayload';
-import { insertWardrobeItemWithCompatibility, uploadWardrobeImageBytes } from '../lib/wardrobeStorage';
+import {
+  insertWardrobeItemWithCompatibility,
+  prepareWardrobeItemDerivatives,
+  uploadWardrobeImageBytes,
+} from '../lib/wardrobeStorage';
 import { supabase } from '../lib/supabase';
 import ViewShot, { captureRef } from 'react-native-view-shot';
 import BrowserActionTray from '../components/browser/BrowserActionTray';
 import BrowserDrawer from '../components/browser/BrowserDrawer';
 import BrowserImagePickerModal from '../components/browser/BrowserImagePickerModal';
 import BrowserTopBar from '../components/browser/BrowserTopBar';
+import { CURATED_BROWSER_STORES } from '../lib/browserStoreCatalog';
 import { getActiveStyleCanvasSession, type ActiveStyleCanvasSession } from '../lib/styleCanvasSession';
+import {
+  addCuratedBrowserStore,
+  addCustomBrowserStore,
+  fetchUserBrowserStores,
+  isBrowserStoresAuthError,
+  isBrowserStoresSchemaError,
+  removeUserBrowserStore,
+  reorderUserBrowserStores,
+  updateCustomBrowserStore,
+} from '../services/browserStoresService';
+import type { CuratedBrowserStore, UserBrowserStore } from '../types/browserStores';
 import { browserItemsToCanvasItems, buildBrowserItemsFromImageUrls } from '../utils/styleCanvasAdapters';
 
 
@@ -51,62 +77,20 @@ const F = {
   card: '#eef0f2',
 };
 
-// ---------------- Data ----------------
-const POPULAR_SITES: { name: string; url: string; domain: string }[] = [
-  // Fast-fashion & basics
-  { name: 'ZARA', url: 'https://www.zara.com/us/', domain: 'zara.com' },
-  { name: 'H&M', url: 'https://www2.hm.com/en_us/index.html', domain: 'hm.com' },
-  { name: 'UNIQLO', url: 'https://www.uniqlo.com/us/en/', domain: 'uniqlo.com' },
-  { name: 'Mango', url: 'https://shop.mango.com/us', domain: 'mango.com' },
-  { name: 'COS', url: 'https://www.cos.com/en_usd/index.html', domain: 'cos.com' },
-  { name: 'Everlane', url: 'https://www.everlane.com/', domain: 'everlane.com' },
-  { name: 'Abercrombie', url: 'https://www.abercrombie.com/shop/us', domain: 'abercrombie.com' },
-  { name: 'Urban Outfitters', url: 'https://www.urbanoutfitters.com/', domain: 'urbanoutfitters.com' },
-
-  // Sportswear & sneakers
-  { name: 'Nike', url: 'https://www.nike.com/w', domain: 'nike.com' },
-  { name: 'Adidas', url: 'https://www.adidas.com/us', domain: 'adidas.com' },
-  { name: 'Lululemon', url: 'https://shop.lululemon.com/', domain: 'lululemon.com' },
-  { name: 'New Balance', url: 'https://www.newbalance.com/', domain: 'newbalance.com' },
-
-  // Outdoor / performance
-  { name: 'Patagonia', url: 'https://www.patagonia.com/shop/clothing', domain: 'patagonia.com' },
-  { name: 'The North Face', url: 'https://www.thenorthface.com/', domain: 'thenorthface.com' },
-  { name: 'Arc’teryx', url: 'https://arcteryx.com/us/en/', domain: 'arcteryx.com' },
-  { name: 'REI', url: 'https://www.rei.com/c/clothing', domain: 'rei.com' },
-
-  // Luxury / designer
-  { name: 'Mr Porter', url: 'https://www.mrporter.com/en-us/', domain: 'mrporter.com' },
-  { name: 'NET-A-PORTER', url: 'https://www.net-a-porter.com/en-us/', domain: 'net-a-porter.com' },
-  { name: 'Farfetch', url: 'https://www.farfetch.com/', domain: 'farfetch.com' },
-  { name: 'Mytheresa', url: 'https://www.mytheresa.com/en-us/men.html', domain: 'mytheresa.com' },
-  { name: 'SSENSE', url: 'https://www.ssense.com/en-us/men', domain: 'ssense.com' },
-  { name: 'END.', url: 'https://www.endclothing.com/us', domain: 'endclothing.com' },
-  { name: 'Kith', url: 'https://kith.com/', domain: 'kith.com' },
-
-  // Department stores
-  { name: 'Nordstrom', url: 'https://www.nordstrom.com/', domain: 'nordstrom.com' },
-  { name: 'Bloomingdale’s', url: 'https://www.bloomingdales.com/', domain: 'bloomingdales.com' },
-  { name: 'Zappos', url: 'https://www.zappos.com/', domain: 'zappos.com' },
-
-  // Marketplaces
-  { name: 'Amazon Fashion', url: 'https://www.amazon.com/fashion', domain: 'amazon.com' },
-  { name: 'Target', url: 'https://www.target.com/c/clothing/-/N-5xtd3', domain: 'target.com' },
-  { name: 'Walmart', url: 'https://www.walmart.com/cp/clothing/5438', domain: 'walmart.com' },
-
-  // Resale / thrift
-  { name: 'Grailed', url: 'https://www.grailed.com/', domain: 'grailed.com' },
-  { name: 'Depop', url: 'https://www.depop.com/', domain: 'depop.com' },
-  { name: 'Poshmark', url: 'https://poshmark.com/', domain: 'poshmark.com' },
-  { name: 'eBay', url: 'https://www.ebay.com/b/Fashion/bn_7000259856', domain: 'ebay.com' },
-  { name: 'thredUP', url: 'https://www.thredup.com/', domain: 'thredup.com' },
-];
-
 const MIN_PIXELS = 220 * 220;
 const MAX_ASPECT = 3.5;
 const MAX_IMPORT_QUEUE_ITEMS = 12;
 const HTTP_URL_PATTERN = /^https?:\/\//i;
 const IP_HOST_PATTERN = /^\d{1,3}(\.\d{1,3}){3}$/;
+const DEFAULT_BROWSER_URL = CURATED_BROWSER_STORES[0]?.url || 'https://www.zara.com/us/';
+
+type RemoveBackgroundResponse = {
+  success?: boolean;
+  cutout_url?: string | null;
+  cutout_storage_url?: string | null;
+  provider?: string | null;
+  error?: string | null;
+};
 
 const devLog = (...args: any[]) => {
   if (__DEV__) {
@@ -222,9 +206,20 @@ function getBrowserNavigationBlockReason(rawUrl?: string) {
   return null;
 }
 
+function resolveBrowserPageUrl(rawUrl?: string | null, fallback?: string | null) {
+  const nextUrl = String(rawUrl || '').trim();
+  if (!nextUrl || nextUrl === 'about:blank' || nextUrl === 'about:srcdoc') {
+    return String(fallback || '').trim() || null;
+  }
+  if (!HTTP_URL_PATTERN.test(nextUrl)) {
+    return String(fallback || '').trim() || null;
+  }
+  return nextUrl;
+}
+
 export default function ImportBrowserScreen({ navigation }: any) {
   const route = useRoute<any>();
-  const routeInitialUrl = normalizeOrSearch(String(route?.params?.initialUrl || '').trim()) || POPULAR_SITES[0].url;
+  const routeInitialUrl = normalizeOrSearch(String(route?.params?.initialUrl || '').trim()) || DEFAULT_BROWSER_URL;
   // Web state
   const [sourceUrl, setSourceUrl] = useState(routeInitialUrl); 
   const [currentUrl, setCurrentUrl] = useState(routeInitialUrl); // WebView source of truth
@@ -270,6 +265,12 @@ const [canGoForward, setCanGoForward] = useState(false);
   const [webErrorUrl, setWebErrorUrl] = useState<string | null>(null);
   const [activeBrowserAction, setActiveBrowserAction] = useState<string | null>(null);
   const [activeCanvasSession, setActiveCanvasSession] = useState<ActiveStyleCanvasSession | null>(null);
+  const [userBrowserStores, setUserBrowserStores] = useState<UserBrowserStore[]>([]);
+  const [browserStoresSupported, setBrowserStoresSupported] = useState(true);
+  const [browserStoresLoading, setBrowserStoresLoading] = useState(false);
+  const [browserStoresMutating, setBrowserStoresMutating] = useState(false);
+  const [upgradeModal, setUpgradeModal] = useState(HIDDEN_UPGRADE_MODAL_STATE);
+  const { isPaywallAvailable, openTryOnPack, openUpgrade } = useUpgradeWall();
 
   // Drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -287,6 +288,69 @@ const [canGoForward, setCanGoForward] = useState(false);
     navigation.navigate('MainTabs', { screen: 'Closet' });
   }
 
+  const resetToLogin = useCallback(() => {
+    navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+  }, [navigation]);
+
+  const refreshBrowserStores = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      try {
+        if (!silent) setBrowserStoresLoading(true);
+        const result = await fetchUserBrowserStores();
+        setUserBrowserStores(result.items);
+        setBrowserStoresSupported(result.supported);
+      } catch (error: any) {
+        console.error('Browser stores hydrate failed:', error?.message || error);
+        if (isBrowserStoresAuthError(error)) {
+          resetToLogin();
+          return;
+        }
+        if (isBrowserStoresSchemaError(error)) {
+          setBrowserStoresSupported(false);
+          setUserBrowserStores([]);
+        }
+      } finally {
+        if (!silent) setBrowserStoresLoading(false);
+      }
+    },
+    [resetToLogin],
+  );
+
+  const runBrowserStoreMutation = useCallback(
+    async (
+      work: () => Promise<{ supported: boolean; items: UserBrowserStore[] }>,
+      failureTitle: string,
+    ) => {
+      try {
+        setBrowserStoresMutating(true);
+        const result = await work();
+        setUserBrowserStores(result.items);
+        setBrowserStoresSupported(result.supported);
+        return true;
+      } catch (error: any) {
+        console.error('Browser store mutation failed:', error?.message || error);
+        if (isBrowserStoresAuthError(error)) {
+          resetToLogin();
+          return false;
+        }
+        if (isBrowserStoresSchemaError(error)) {
+          setBrowserStoresSupported(false);
+          setUserBrowserStores([]);
+          Alert.alert(
+            'Store personalization unavailable',
+            'The store-management table is not available yet, so Browser is falling back to the curated catalog.',
+          );
+          return false;
+        }
+        Alert.alert(failureTitle, error?.message || 'Could not update your browser stores.');
+        return false;
+      } finally {
+        setBrowserStoresMutating(false);
+      }
+    },
+    [resetToLogin],
+  );
+
   useEffect(() => {
     let mounted = true;
 
@@ -298,16 +362,18 @@ const [canGoForward, setCanGoForward] = useState(false);
     };
 
     void refreshActiveCanvas();
+    void refreshBrowserStores({ silent: true });
 
     const unsubscribe = navigation?.addListener?.('focus', () => {
       void refreshActiveCanvas();
+      void refreshBrowserStores({ silent: true });
     });
 
     return () => {
       mounted = false;
       unsubscribe?.();
     };
-  }, [navigation]);
+  }, [navigation, refreshBrowserStores]);
 
   useEffect(() => {
     const nextUrl = normalizeOrSearch(String(route?.params?.initialUrl || '').trim());
@@ -318,6 +384,11 @@ const [canGoForward, setCanGoForward] = useState(false);
     setWebErrorMessage(null);
     setWebErrorUrl(null);
   }, [route?.params?.initialUrl]);
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    void refreshBrowserStores();
+  }, [drawerOpen, refreshBrowserStores]);
 
   
   useEffect(() => {
@@ -522,7 +593,7 @@ const onWebMessage = (event: any) => {
   }
 
   async function openCurrentUrlExternally(rawUrl?: string | null) {
-    const targetUrl = String(rawUrl || currentUrl || sourceUrl || '').trim();
+    const targetUrl = resolveBrowserPageUrl(rawUrl, currentUrl || sourceUrl || null);
     if (!HTTP_URL_PATTERN.test(targetUrl)) {
       Alert.alert('Cannot open link', 'Only standard http(s) pages can be opened externally.');
       return;
@@ -540,7 +611,11 @@ const onWebMessage = (event: any) => {
     }
   }
 
-  function navigateFromBrowser(screenName: string, params?: Record<string, any>) {
+  function navigateFromBrowser(
+    screenName: string,
+    params?: Record<string, any>,
+    options?: { immediate?: boolean },
+  ) {
     const shouldWaitForPickerDismiss = showPicker;
     dismissBrowserUi();
 
@@ -550,6 +625,10 @@ const onWebMessage = (event: any) => {
 
     if (shouldWaitForPickerDismiss) {
       InteractionManager.runAfterInteractions(() => {
+        if (options?.immediate) {
+          requestAnimationFrame(performNavigation);
+          return;
+        }
         setTimeout(performNavigation, 220);
       });
       return;
@@ -558,15 +637,51 @@ const onWebMessage = (event: any) => {
     requestAnimationFrame(performNavigation);
   }
 
-  function navigateToItemVerdict(item: any) {
+  function navigateToItemVerdict(item: any, options?: { immediate?: boolean }) {
     if (!item) return;
     const external = isExternalItemLike(item);
-    navigateFromBrowser('ItemVerdict', {
-      itemId: external ? undefined : item.id,
-      item,
-      source: 'browser',
-      autoSaved: !external && item?.wardrobe_status === 'owned',
+    navigateFromBrowser(
+      'ItemVerdict',
+      {
+        itemId: external ? undefined : item.id,
+        item,
+        source: 'browser',
+        autoSaved: !external && item?.wardrobe_status === 'owned',
+      },
+      options,
+    );
+  }
+
+  async function openCachedBrowserVerdictIfAvailable({
+    userId,
+    selectedUri,
+  }: {
+    userId: string;
+    selectedUri: string;
+  }) {
+    const placeholderItem = buildExternalItemPayload({
+      scraped: makeImportMeta('pick', selectedUri),
+      sourceSubtype: 'browser_import',
+      fallbackName: webPageMeta.title || 'Imported Item',
     });
+    const cacheItemKey = buildVerdictCacheItemKey({
+      itemId: placeholderItem?.id,
+      item: placeholderItem as any,
+    });
+
+    if (!cacheItemKey) return false;
+
+    const closetRevisionState = await readClosetRevision(userId);
+    const cachedVerdict = await readCachedVerdict({
+      userId,
+      itemKey: cacheItemKey,
+      closetRevision: closetRevisionState.revision,
+    });
+
+    if (!cachedVerdict) return false;
+
+    navigateToItemVerdict(placeholderItem, { immediate: true });
+    return true;
   }
 
   function completeBrowserImportUi() {
@@ -702,7 +817,7 @@ async function bytesFromUri(uri: string): Promise<{ bytes: Uint8Array; mime: str
 async function uploadImageToSupabase(
   uri: string,
   userId: string
-): Promise<{ imagePath: string; imageUrl: string | null; accessUrl: string | null }> {
+): Promise<{ imagePath: string; imageUrl: string | null; accessUrl: string | null; storageUrl?: string | null }> {
   let workingUri = uri;
   if (/^https?:\/\//i.test(uri)) {
     // leave as is → handled by fetch in bytesFromUri
@@ -753,6 +868,57 @@ async function parseApiJsonSafe(response: Response) {
   }
 }
 
+async function maybeRemoveBackgroundForUploadedImage(uploadedImage: {
+  imagePath: string;
+  imageUrl: string | null;
+  accessUrl: string | null;
+  storageUrl?: string | null;
+}) {
+  const sourceUrl = uploadedImage.accessUrl || uploadedImage.storageUrl || uploadedImage.imageUrl || null;
+  if (!sourceUrl) {
+    return {
+      cutoutImageUrl: null,
+      bgRemoved: false,
+    };
+  }
+
+  try {
+    const { response: cutoutResponse, data: cutoutPayload } = await apiPostWithRateLimitRetry<RemoveBackgroundResponse>('/images/remove-background', {
+      image_url: sourceUrl,
+    }, {
+      maxAttempts: 3,
+      fallbackMs: 2000,
+    });
+    const payload = cutoutPayload as RemoveBackgroundResponse;
+    const cutoutError =
+      cutoutPayload && typeof cutoutPayload === 'object' && 'error' in cutoutPayload
+        ? String(cutoutPayload.error || '').trim()
+        : '';
+
+    if (cutoutResponse.ok && !cutoutError) {
+      const cutoutImageUrl = payload.cutout_storage_url || payload.cutout_url || null;
+      return {
+        cutoutImageUrl,
+        bgRemoved: Boolean(payload.success && cutoutImageUrl),
+      };
+    }
+
+    console.warn('Browser background removal failed; continuing with original image.', {
+      status: cutoutResponse.status,
+      error: cutoutError || 'Unknown remove-background error',
+    });
+  } catch (error: any) {
+    console.warn('Browser background removal request failed; continuing with original image.', {
+      error: error?.message || error,
+    });
+  }
+
+  return {
+    cutoutImageUrl: null,
+    bgRemoved: false,
+  };
+}
+
 async function buildUploadedExternalLockedItem({
   sourceUri,
   userId,
@@ -766,17 +932,24 @@ async function buildUploadedExternalLockedItem({
 }) {
   const localUri = HTTP_URL_PATTERN.test(sourceUri) ? await ensureLocalUri(sourceUri) : sourceUri;
   const uploadedImage = await uploadImageToSupabase(localUri, userId);
+  const backgroundRemoval = await maybeRemoveBackgroundForUploadedImage(uploadedImage);
   const accessUrl = uploadedImage.accessUrl;
   if (!accessUrl) throw new Error('Upload returned null');
 
-  const tagResp = await apiPost('/tag', {
+  const { response: tagResp, data: taggingPayload } = await apiPostWithRateLimitRetry<TaggingResponse>('/tag', {
     image_url: accessUrl,
     import_context: buildTagImportContext(importMeta, importMeta?.source_image_url || sourceUri),
+  }, {
+    maxAttempts: 3,
+    fallbackMs: 2000,
   });
-  const taggingPayload = (await parseApiJsonSafe(tagResp)) as TaggingResponse;
   const tags = extractNormalizedTags(taggingPayload);
   if (!tagResp.ok || taggingPayload?.error) {
-    throw new Error(taggingPayload?.error || 'Tagging failed');
+    throw new Error(
+      tagResp.status === 429
+        ? 'Import is temporarily busy. Please try again in a moment.'
+        : taggingPayload?.error || 'Tagging failed',
+    );
   }
 
   const sourceSubtype =
@@ -791,10 +964,15 @@ async function buildUploadedExternalLockedItem({
       scraped: importMeta,
       tagged: tags,
       normalized: tags,
-      uploadedImage,
+      uploadedImage: {
+        ...uploadedImage,
+        cutoutImageUrl: backgroundRemoval.cutoutImageUrl,
+        bgRemoved: backgroundRemoval.bgRemoved,
+      },
       sourceSubtype,
       fallbackName: fallbackName || importMeta?.source_title || 'Imported Item',
     }),
+    cutout_url: backgroundRemoval.cutoutImageUrl,
     season: normalizeSeason(tags?.season),
   };
 }
@@ -843,9 +1021,23 @@ async function addSelectedForImport({
 
   let successCount = 0;
   const failures: Array<{ uri: string; message: string }> = [];
+  let limitError: any = null;
 
   try {
     const user = await getAuthenticatedUserOrThrow();
+    const closetAccess = await canUseFeature(user.id, 'closet_item');
+    const numericRemaining =
+      closetAccess.remaining === 'unlimited'
+        ? Number.POSITIVE_INFINITY
+        : Number.isFinite(Number(closetAccess.remaining))
+          ? Number(closetAccess.remaining)
+          : 0;
+
+    if (!closetAccess.allowed || numericRemaining < effectiveList.length) {
+      setUpgradeModal(buildUpgradeModalState('closet_item', closetAccess));
+      return;
+    }
+
     setImportQueueState({ completed: 0, total: effectiveList.length });
 
     for (let index = 0; index < effectiveList.length; index += 1) {
@@ -872,16 +1064,26 @@ async function addSelectedForImport({
           sourceTitleFallback: webPageMeta.title || 'Imported Item',
         });
 
-        const { error: insertError } = await insertWardrobeItemWithCompatibility(insertPayload);
+        const { data: insertedItem, error: insertError } = await insertWardrobeItemWithCompatibility(insertPayload);
         if (insertError) throw new Error(insertError.message);
+        await prepareWardrobeItemDerivatives(insertedItem);
         successCount += 1;
       } catch (itemError: any) {
+        if (isSubscriptionLimitError(itemError)) {
+          limitError = itemError;
+          break;
+        }
         const failureMessage = formatImportErrorMessage(itemError?.message);
         console.error('❌ Import item failed:', { uri, message: failureMessage });
         failures.push({ uri, message: failureMessage });
       } finally {
         setImportQueueState({ completed: index + 1, total: effectiveList.length });
       }
+    }
+
+    if (limitError) {
+      setUpgradeModal(buildUpgradeModalState(limitError.featureName, limitError.accessResult));
+      return;
     }
 
     if (!successCount && failures.length === 1 && effectiveList.length === 1) {
@@ -901,7 +1103,7 @@ async function addSelectedForImport({
           devLog('Uploaded screenshot fallback for import.');
           if (!fallbackUrl) throw new Error('Unable to resolve uploaded screenshot');
 
-          const tagResp = await apiPost('/tag', {
+          const { response: tagResp, data: taggingPayload } = await apiPostWithRateLimitRetry<TaggingResponse>('/tag', {
             image_url: fallbackUrl,
             import_context: buildTagImportContext(
               {
@@ -923,10 +1125,18 @@ async function addSelectedForImport({
               },
               anchorImage || fallbackUrl
             ),
+          }, {
+            maxAttempts: 3,
+            fallbackMs: 2000,
           });
-          const taggingPayload = (await parseApiJsonSafe(tagResp)) as TaggingResponse;
           const tags = extractNormalizedTags(taggingPayload);
-          if (!tagResp.ok || taggingPayload?.error) throw new Error(taggingPayload?.error || 'Tagging failed');
+          if (!tagResp.ok || taggingPayload?.error) {
+            throw new Error(
+              tagResp.status === 429
+                ? 'Import is temporarily busy. Please try again in a moment.'
+                : taggingPayload?.error || 'Tagging failed',
+            );
+          }
 
           const externalItem = buildExternalItemPayload({
             scraped: {
@@ -963,8 +1173,9 @@ async function addSelectedForImport({
             sourceTitleFallback: webPageMeta.title || 'Imported Screenshot',
           });
 
-          const { error: insertError } = await insertWardrobeItemWithCompatibility(fallbackPayload);
+          const { data: insertedItem, error: insertError } = await insertWardrobeItemWithCompatibility(fallbackPayload);
           if (insertError) throw new Error(insertError.message);
+          await prepareWardrobeItemDerivatives(insertedItem);
 
           successCount += 1;
           failures.length = 0;
@@ -1109,19 +1320,29 @@ async function handleAddToCloset() {
 }
 
 async function handleGetVerdict() {
-  await runExclusiveBrowserAction('Preparing verdict', async () => {
-    const selected = selectedList.length ? selectedList : anchorImage ? [anchorImage] : [];
-    if (!selected.length) {
-      Alert.alert('No item selected', 'Pick one product image first so we can judge it.');
-      return;
-    }
-    if (selected.length !== 1) {
-      Alert.alert('Choose one item', 'Get Verdict works on one item at a time.');
-      return;
-    }
-    const user = await getAuthenticatedUserOrThrow();
-    const selectedUri = selected[0];
+  const selected = selectedList.length ? selectedList : anchorImage ? [anchorImage] : [];
+  if (!selected.length) {
+    Alert.alert('No item selected', 'Pick one product image first so we can judge it.');
+    return;
+  }
+  if (selected.length !== 1) {
+    Alert.alert('Choose one item', 'Get Verdict works on one item at a time.');
+    return;
+  }
 
+  let user;
+  const selectedUri = selected[0];
+  try {
+    user = await getAuthenticatedUserOrThrow();
+    if (await openCachedBrowserVerdictIfAvailable({ userId: user.id, selectedUri })) {
+      return;
+    }
+  } catch (error: any) {
+    Alert.alert('Verdict error', error?.message || 'Could not prepare verdict for this item.');
+    return;
+  }
+
+  await runExclusiveBrowserAction('Preparing verdict', async () => {
     console.log('[item-source]', {
       sourceType: 'external',
       sourceSubtype: 'browser_import',
@@ -1314,8 +1535,10 @@ async function handleStyleCanvas() {
         action: 'style',
       });
       // 1) Ask backend to scan the current page for a product
-      const resp = await apiPost('/import/scan', { url: currentPageUrl });
-      const data = await parseApiJsonSafe(resp);
+      const { response: resp, data } = await apiPostWithRateLimitRetry('/import/scan', { url: currentPageUrl }, {
+        maxAttempts: 3,
+        fallbackMs: 2000,
+      });
       if (!resp.ok) {
         throw new Error(data?.error || `Scan failed (${resp.status})`);
       }
@@ -1382,8 +1605,10 @@ async function handleStyleCanvas() {
   async function autoscanPage() {
     const current = webPageMeta.url || currentUrl;
     try {
-      const resp = await apiPost('/import/scan', { url: current });
-      const data = await parseApiJsonSafe(resp);
+      const { response: resp, data } = await apiPostWithRateLimitRetry('/import/scan', { url: current }, {
+        maxAttempts: 3,
+        fallbackMs: 2000,
+      });
       if (!resp.ok) throw new Error(data?.error || `Scan failed (${resp.status})`);
       if (!data?.ok || !data?.product) throw new Error(data?.error || 'No product found.');
       const p = data.product;
@@ -1513,9 +1738,10 @@ async function handleStyleCanvas() {
         }}
         onNavigationStateChange={(nav) => {
           const next = nav?.url;
-          if (next) {
-            setCurrentUrl(next);
-            if (!isEditingBar) setAddressBarText(next);
+          const safeNext = resolveBrowserPageUrl(next, currentUrl);
+          if (safeNext) {
+            setCurrentUrl(safeNext);
+            if (!isEditingBar) setAddressBarText(safeNext);
           }
           setCanGoBack(!!nav?.canGoBack);
           setCanGoForward(!!nav?.canGoForward);
@@ -1536,18 +1762,18 @@ async function handleStyleCanvas() {
         onError={({ nativeEvent }) => {
           setWebLoading(false);
           setWebErrorMessage(nativeEvent?.description || 'This page failed to load in the in-app browser.');
-          setWebErrorUrl(nativeEvent?.url || currentUrl);
+          setWebErrorUrl(resolveBrowserPageUrl(nativeEvent?.url, currentUrl));
         }}
         onHttpError={({ nativeEvent }) => {
           setWebLoading(false);
           setWebErrorMessage(`This page returned an error (${nativeEvent?.statusCode || 'unknown'}).`);
-          setWebErrorUrl(nativeEvent?.url || currentUrl);
+          setWebErrorUrl(resolveBrowserPageUrl(nativeEvent?.url, currentUrl));
         }}
         onMessage={onWebMessage}
         javaScriptEnabled
         domStorageEnabled
         setSupportMultipleWindows={false}
-        applicationNameForUserAgent="Closana/Importer"
+        applicationNameForUserAgent="Klozu/Importer"
         contentInsetAdjustmentBehavior="never"
         automaticallyAdjustContentInsets={false}
         bounces={false}
@@ -1565,7 +1791,11 @@ async function handleStyleCanvas() {
         drawerX={drawerX}
         backdropOpacity={backdropOpacity}
         width={DRAWER_W}
-        sites={POPULAR_SITES}
+        curatedStores={CURATED_BROWSER_STORES}
+        userStores={userBrowserStores}
+        storesSupported={browserStoresSupported}
+        storesLoading={browserStoresLoading}
+        storesMutating={browserStoresMutating}
         onClose={() => setDrawerOpen(false)}
         onSelectSite={(site) => {
           setDrawerOpen(false);
@@ -1573,6 +1803,30 @@ async function handleStyleCanvas() {
           setCurrentUrl(site.url);
           setAddressBarText(site.url);
         }}
+        onAddCuratedStore={(store: CuratedBrowserStore) =>
+          runBrowserStoreMutation(() => addCuratedBrowserStore(store), 'Could not pin store')
+        }
+        onAddCustomStore={(input) =>
+          runBrowserStoreMutation(() => addCustomBrowserStore(input), 'Could not add store')
+        }
+        onUpdateCustomStore={(storeId, input) =>
+          runBrowserStoreMutation(
+            () => updateCustomBrowserStore(storeId, input),
+            'Could not update store',
+          )
+        }
+        onRemoveUserStore={(store) =>
+          runBrowserStoreMutation(
+            () => removeUserBrowserStore(store.id),
+            'Could not remove store',
+          )
+        }
+        onMoveUserStore={(storeId, direction) =>
+          runBrowserStoreMutation(
+            () => reorderUserBrowserStores(storeId, direction),
+            'Could not reorder stores',
+          )
+        }
       />
 
       <BrowserImagePickerModal
@@ -1630,6 +1884,24 @@ async function handleStyleCanvas() {
           ))}
         </ViewShot>
       </BrowserImagePickerModal>
+
+      <UpgradeLimitModal
+        visible={upgradeModal.visible}
+        featureName={upgradeModal.featureName}
+        used={upgradeModal.used}
+        limit={upgradeModal.limit}
+        remaining={upgradeModal.remaining}
+        tier={upgradeModal.tier}
+        recommendedUpgrade={upgradeModal.recommendedUpgrade}
+        isPaywallAvailable={isPaywallAvailable}
+        onClose={() => setUpgradeModal(HIDDEN_UPGRADE_MODAL_STATE)}
+        onUpgrade={() => {
+          void openUpgrade();
+        }}
+        onBuyTryOnPack={() => {
+          void openTryOnPack();
+        }}
+      />
     </View>
   );
 }

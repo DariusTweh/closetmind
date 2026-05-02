@@ -1,14 +1,28 @@
 import type { TaggedFashionItem } from './tagging';
+import {
+  canonicalizeSubtype,
+  deriveMainCategory,
+  getDefaultLayeringRole,
+  getFriendlyTypeLabel,
+} from './wardrobeTaxonomy';
 
 type UploadedImageShape = {
   imagePath?: string | null;
   imageUrl?: string | null;
   accessUrl?: string | null;
+  storageUrl?: string | null;
+  thumbnailUrl?: string | null;
+  displayImageUrl?: string | null;
+  cutoutImageUrl?: string | null;
+  cutoutThumbnailUrl?: string | null;
+  cutoutDisplayUrl?: string | null;
+  bgRemoved?: boolean | null;
 };
 
 type ManualWardrobeFields = {
   name?: string | null;
   type?: string | null;
+  subcategory?: string | null;
   color?: string | null;
   vibes?: string[] | string | null;
   season?: string | null;
@@ -50,9 +64,17 @@ export type ExternalItemPayload = {
   source_domain?: string | null;
   image_url?: string | null;
   image_path?: string | null;
+  thumbnail_url?: string | null;
+  display_image_url?: string | null;
   original_image_url?: string | null;
+  cutout_url?: string | null;
+  cutout_image_url?: string | null;
+  cutout_thumbnail_url?: string | null;
+  cutout_display_url?: string | null;
+  bg_removed?: boolean | null;
   source_image_url?: string | null;
   main_category?: string | null;
+  subcategory?: string | null;
   type?: string | null;
   primary_color?: string | null;
   secondary_colors?: string[];
@@ -83,7 +105,6 @@ export type ExternalItemPayload = {
   meta?: Record<string, any> | null;
 };
 
-const MAIN_CATEGORY_VALUES = ['top', 'bottom', 'shoes', 'outerwear', 'accessory', 'layer', 'onepiece'];
 const SEASON_VALUES = ['spring', 'summer', 'fall', 'winter', 'all'];
 
 function normalizeText(value: any, maxLength = 160) {
@@ -191,17 +212,54 @@ export function isExternalItemLike(item: Record<string, any> | null | undefined)
 }
 
 export function inferWardrobeMainCategory(value: any) {
-  const normalized = normalizeLowerPhrase(value, 80);
-  if (!normalized) return null;
-  if (MAIN_CATEGORY_VALUES.includes(normalized)) return normalized;
-  if (/(dress|romper|jumpsuit|onepiece|one-piece)/.test(normalized)) return 'onepiece';
-  if (/(blazer|jacket|coat|parka|trench|outerwear)/.test(normalized)) return 'outerwear';
-  if (/(cardigan|vest|overshirt|shacket|layer)/.test(normalized)) return 'layer';
-  if (/(shoe|sneaker|boot|loafer|heel|sandal|slide)/.test(normalized)) return 'shoes';
-  if (/(pant|pants|jean|trouser|skirt|short|legging|bottom)/.test(normalized)) return 'bottom';
-  if (/(bag|hat|belt|scarf|jewelry|watch|accessory)/.test(normalized)) return 'accessory';
-  if (/(tee|shirt|tank|blouse|polo|hoodie|sweater|top)/.test(normalized)) return 'top';
-  return null;
+  return (
+    deriveMainCategory({
+      mainCategory: value,
+      subcategory: value,
+      type: value,
+      name: value,
+    }) || null
+  );
+}
+
+function resolveWardrobeTaxonomy({
+  mainCategory,
+  subcategory,
+  type,
+  name,
+  layeringRole,
+}: {
+  mainCategory?: any;
+  subcategory?: any;
+  type?: any;
+  name?: any;
+  layeringRole?: any;
+}) {
+  const rawType = normalizeOptionalText(type, 80);
+  const rawSubtype = normalizeOptionalText(subcategory, 40);
+  const resolvedMainCategory =
+    deriveMainCategory({
+      mainCategory: normalizeOptionalText(mainCategory, 40),
+      subcategory: rawSubtype,
+      type: rawType,
+      name: normalizeOptionalText(name, 160),
+      layeringRole: normalizeOptionalText(layeringRole, 24),
+    }) || null;
+  const resolvedSubcategory = canonicalizeSubtype(rawSubtype || rawType || name, {
+    mainCategory: resolvedMainCategory,
+  });
+  const resolvedType = resolvedSubcategory
+    ? getFriendlyTypeLabel(resolvedSubcategory, rawType)
+    : rawType;
+  const resolvedLayeringRole =
+    normalizeOptionalText(layeringRole, 24) || getDefaultLayeringRole(resolvedSubcategory, resolvedMainCategory);
+
+  return {
+    mainCategory: resolvedMainCategory,
+    subcategory: resolvedSubcategory,
+    type: resolvedType,
+    layeringRole: resolvedLayeringRole,
+  };
 }
 
 export function mergeImportedProductData({
@@ -313,6 +371,13 @@ export function buildExternalItemPayload({
     tagged: tagged || {},
     normalized: normalized || {},
   });
+  const taxonomy = resolveWardrobeTaxonomy({
+    mainCategory: normalized?.main_category || tagged?.main_category,
+    subcategory: normalized?.subcategory || tagged?.subcategory,
+    type: normalized?.type || tagged?.type,
+    name: normalized?.name || tagged?.name || mergedImport.source_title || fallbackName,
+    layeringRole: normalized?.layering_role || tagged?.layering_role,
+  });
 
   const externalId = makeExternalItemId(
     mergedImport.external_product_id,
@@ -345,14 +410,38 @@ export function buildExternalItemPayload({
     product_url: mergedImport.product_url,
     source_url: mergedImport.source_url,
     source_domain: mergedImport.source_domain,
-    image_url: uploadedImage?.imageUrl ?? normalizeOptionalText(normalized?.image_url, 240),
+    image_url:
+      uploadedImage?.storageUrl ??
+      uploadedImage?.accessUrl ??
+      uploadedImage?.imageUrl ??
+      normalizeOptionalText(normalized?.image_url, 240),
     image_path: uploadedImage?.imagePath ?? normalizeOptionalText(normalized?.image_path, 240),
+    thumbnail_url: uploadedImage?.thumbnailUrl ?? normalizeOptionalText(normalized?.thumbnail_url, 240),
+    display_image_url:
+      uploadedImage?.displayImageUrl ??
+      uploadedImage?.storageUrl ??
+      uploadedImage?.accessUrl ??
+      uploadedImage?.imageUrl ??
+      normalizeOptionalText(normalized?.display_image_url, 240),
     original_image_url: mergedImport.original_image_url,
-    source_image_url: mergedImport.source_image_url,
-    main_category:
-      inferWardrobeMainCategory(normalized?.main_category || normalized?.type || tagged?.main_category || tagged?.type) ||
-      'top',
-    type: normalizeOptionalText(normalized?.type || tagged?.type, 80),
+    cutout_url:
+      uploadedImage?.cutoutImageUrl ?? normalizeOptionalText(normalized?.cutout_url, 240) ?? normalizeOptionalText(normalized?.cutout_image_url, 240),
+    cutout_image_url:
+      uploadedImage?.cutoutImageUrl ?? normalizeOptionalText(normalized?.cutout_image_url, 240),
+    cutout_thumbnail_url:
+      uploadedImage?.cutoutThumbnailUrl ??
+      normalizeOptionalText(normalized?.cutout_thumbnail_url, 240),
+    cutout_display_url:
+      uploadedImage?.cutoutDisplayUrl ??
+      normalizeOptionalText(normalized?.cutout_display_url, 240),
+    bg_removed:
+      typeof uploadedImage?.bgRemoved === 'boolean'
+        ? uploadedImage.bgRemoved
+        : Boolean(normalized?.bg_removed),
+    source_image_url: mergedImport.source_image_url || mergedImport.original_image_url,
+    main_category: taxonomy.mainCategory || 'top',
+    subcategory: taxonomy.subcategory,
+    type: taxonomy.type,
     primary_color: normalizeOptionalText(normalized?.primary_color || tagged?.primary_color, 32)?.toLowerCase() || null,
     secondary_colors: normalizeStringArray(normalized?.secondary_colors || tagged?.secondary_colors, 6, 24),
     color_family: normalizeStringArray(normalized?.color_family || tagged?.color_family, 6, 24),
@@ -368,7 +457,7 @@ export function buildExternalItemPayload({
     pattern_description: normalizeOptionalText(normalized?.pattern_description || tagged?.pattern_description, 80),
     pattern_type: normalizeOptionalText(normalized?.pattern_type || tagged?.pattern_type, 40),
     texture_notes: normalizeOptionalText(normalized?.texture_notes || tagged?.texture_notes, 80),
-    layering_role: normalizeOptionalText(normalized?.layering_role || tagged?.layering_role, 24),
+    layering_role: taxonomy.layeringRole,
     statement_level: normalizeOptionalText(normalized?.statement_level || tagged?.statement_level, 16),
     footwear_style: normalizeOptionalText(normalized?.footwear_style || tagged?.footwear_style, 24),
     style_role: normalizeOptionalText(normalized?.style_role || tagged?.style_role, 24),
@@ -420,9 +509,20 @@ export function buildWardrobeInsertPayload({
     normalized: normalizedTags || {},
   });
   const manualName = normalizeOptionalText(manualFields?.name, 120);
-  const manualType = normalizeOptionalText(manualFields?.type, 80);
-  const manualCategory = inferWardrobeMainCategory(manualFields?.main_category || manualType);
+  const manualTaxonomy = resolveWardrobeTaxonomy({
+    mainCategory: manualFields?.main_category,
+    subcategory: manualFields?.subcategory,
+    type: manualFields?.type,
+    name: manualName,
+  });
   const manualColor = normalizeLowerPhrase(manualFields?.color, 24) || null;
+  const autoTaxonomy = resolveWardrobeTaxonomy({
+    mainCategory: normalizedTags?.main_category,
+    subcategory: normalizedTags?.subcategory,
+    type: normalizedTags?.type,
+    name: normalizedTags?.name || mergedImport.source_title || sourceTitleFallback,
+    layeringRole: normalizedTags?.layering_role,
+  });
   const season = normalizeWardrobeSeason(
     manualOverride ? manualFields?.season : normalizedTags?.season,
   );
@@ -434,11 +534,33 @@ export function buildWardrobeInsertPayload({
     sourceTitleFallback,
     'Imported Item',
   );
-  const finalType = manualOverride ? manualType : normalizeOptionalText(normalizedTags?.type, 80);
   const finalCategory =
-    (manualOverride ? manualCategory : inferWardrobeMainCategory(normalizedTags?.main_category || normalizedTags?.type)) ||
-    inferWardrobeMainCategory(finalType) ||
+    (manualOverride ? manualTaxonomy.mainCategory : autoTaxonomy.mainCategory) ||
+    inferWardrobeMainCategory(
+      manualOverride
+        ? manualTaxonomy.subcategory || manualTaxonomy.type || finalName
+        : autoTaxonomy.subcategory || autoTaxonomy.type || finalName,
+    ) ||
     'top';
+  const finalSubcategory = manualOverride ? manualTaxonomy.subcategory : autoTaxonomy.subcategory;
+  const finalType = manualOverride ? manualTaxonomy.type : autoTaxonomy.type;
+  const finalLayeringRole =
+    (manualOverride ? manualTaxonomy.layeringRole : autoTaxonomy.layeringRole) ||
+    getDefaultLayeringRole(finalSubcategory, finalCategory);
+  const originalImageUrl =
+    mergedImport.original_image_url ||
+    normalizeOptionalText(uploadedImage?.storageUrl, 500) ||
+    normalizeOptionalText(uploadedImage?.accessUrl, 500) ||
+    normalizeOptionalText(uploadedImage?.imageUrl, 500) ||
+    null;
+  const cutoutImageUrl = normalizeOptionalText(uploadedImage?.cutoutImageUrl, 500);
+  const resolvedImageUrl =
+    cutoutImageUrl ||
+    normalizeOptionalText(uploadedImage?.storageUrl, 500) ||
+    normalizeOptionalText(uploadedImage?.accessUrl, 500) ||
+    normalizeOptionalText(uploadedImage?.imageUrl, 500) ||
+    null;
+  const bgRemoved = Boolean(uploadedImage?.bgRemoved && cutoutImageUrl);
 
   const payload: Record<string, any> = {
     user_id: userId,
@@ -446,6 +568,7 @@ export function buildWardrobeInsertPayload({
     source_title: mergedImport.source_title || normalizeOptionalText(sourceTitleFallback, 160),
     type: finalType,
     main_category: finalCategory,
+    subcategory: finalSubcategory,
     color: primaryColor,
     primary_color: primaryColor,
     secondary_colors: normalizeStringArray(normalizedTags?.secondary_colors, 6, 24),
@@ -463,12 +586,11 @@ export function buildWardrobeInsertPayload({
     sleeve_length: normalizeOptionalText(normalizedTags?.sleeve_length, 24),
     formality: normalizeOptionalText(normalizedTags?.formality, 24),
     occasion_tags: normalizeStringArray(normalizedTags?.occasion_tags, 8, 24),
-    layering_role: normalizeOptionalText(normalizedTags?.layering_role, 24),
+    layering_role: finalLayeringRole,
     statement_level: normalizeOptionalText(normalizedTags?.statement_level, 16),
     footwear_style: normalizeOptionalText(normalizedTags?.footwear_style, 24),
     style_role: normalizeOptionalText(normalizedTags?.style_role, 24),
     garment_function: normalizeOptionalText(normalizedTags?.garment_function, 32),
-    subcategory: normalizeOptionalText(normalizedTags?.subcategory, 32),
     subcategory_confidence:
       typeof normalizedTags?.subcategory_confidence === 'number' ? normalizedTags.subcategory_confidence : null,
     function_confidence:
@@ -490,8 +612,15 @@ export function buildWardrobeInsertPayload({
     styling_notes: normalizeOptionalText(normalizedTags?.styling_notes, 180),
     vibe_tags: manualOverride ? normalizeManualVibes(manualFields?.vibes) : normalizeStringArray(normalizedTags?.vibe_tags, 10, 24),
     season,
-    image_url: uploadedImage?.imageUrl ?? null,
+    image_url: resolvedImageUrl,
     image_path: uploadedImage?.imagePath ?? null,
+    thumbnail_url: normalizeOptionalText(uploadedImage?.thumbnailUrl, 500),
+    display_image_url:
+      normalizeOptionalText(uploadedImage?.displayImageUrl, 500) ||
+      normalizeOptionalText(uploadedImage?.storageUrl, 500) ||
+      normalizeOptionalText(uploadedImage?.accessUrl, 500) ||
+      normalizeOptionalText(uploadedImage?.imageUrl, 500) ||
+      null,
     brand: mergedImport.brand,
     price: mergedImport.price,
     retail_price: mergedImport.retail_price,
@@ -504,8 +633,16 @@ export function buildWardrobeInsertPayload({
     source_type: sourceType || mergedImport.source_type || inferSourceType(importMethod, importMeta),
     source_id: mergedImport.source_id,
     external_product_id: mergedImport.external_product_id,
-    original_image_url: mergedImport.original_image_url,
-    source_image_url: mergedImport.source_image_url,
+    original_image_url: originalImageUrl,
+    cutout_image_url: cutoutImageUrl,
+    cutout_thumbnail_url:
+      normalizeOptionalText(uploadedImage?.cutoutThumbnailUrl, 500) ||
+      normalizeOptionalText(normalizedTags?.cutout_thumbnail_url, 500),
+    cutout_display_url:
+      normalizeOptionalText(uploadedImage?.cutoutDisplayUrl, 500) ||
+      normalizeOptionalText(normalizedTags?.cutout_display_url, 500),
+    bg_removed: bgRemoved,
+    source_image_url: mergedImport.source_image_url || originalImageUrl,
     import_method: importMethod || null,
     wardrobe_status: wardrobeStatus,
   };
@@ -531,6 +668,12 @@ export function buildWardrobeInsertPayloadFromExternalItem(
     uploadedImage: {
       imagePath: externalItem?.image_path ?? null,
       imageUrl: externalItem?.image_url ?? null,
+      thumbnailUrl: externalItem?.thumbnail_url ?? null,
+      displayImageUrl: externalItem?.display_image_url ?? null,
+      cutoutImageUrl: externalItem?.cutout_image_url ?? null,
+      cutoutThumbnailUrl: externalItem?.cutout_thumbnail_url ?? null,
+      cutoutDisplayUrl: externalItem?.cutout_display_url ?? null,
+      bgRemoved: externalItem?.bg_removed ?? null,
     },
     normalizedTags: externalItem as TaggedFashionItem,
     importMeta: {

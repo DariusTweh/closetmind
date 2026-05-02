@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiPost } from '../lib/api';
 import {
   buildDashboardRegenerationRequest,
+  evaluateDailyFitCandidate,
   extractDailyFitSummary,
   fetchDailyFitForUser,
   fetchProfileAvatarForUser,
   getRecentWardrobeItems,
+  mapGeneratedOutfitToWardrobe,
   mapDailyFitItems,
   maybeRefreshUserLocation,
+  persistManualDailyFit,
   persistDashboardCache,
   readDashboardCache,
   resolveCurrentUserId,
@@ -139,30 +142,67 @@ export default function useClosetDashboard({
 
     setOutfitLoading(true);
     try {
-      const request = buildDashboardRegenerationRequest({
-        outfitWeather,
-        outfitLocation,
-        currentOutfit: dailyFitItems,
-        wardrobe: wardrobeRef.current,
-      });
-      const response = await apiPost('/generate-multistep-outfit', request);
-      if (!response.ok) {
+      const attemptedAvoidIds = new Set(
+        (Array.isArray(dailyFitItems) ? dailyFitItems : [])
+          .map((item) => String(item?.id || '').trim())
+          .filter(Boolean),
+      );
+      let nextItems: any[] = [];
+      let resolvedRequest: any = null;
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const request = buildDashboardRegenerationRequest({
+          outfitWeather,
+          outfitLocation,
+          currentOutfit: dailyFitItems,
+          wardrobe: wardrobeRef.current,
+          avoidIds: Array.from(attemptedAvoidIds),
+        });
+        resolvedRequest = request;
+
+        const response = await apiPost('/generate-multistep-outfit', request);
+        if (!response.ok) {
+          continue;
+        }
+
+        const payload = await response.json().catch(() => null);
+        const candidateItems = mapGeneratedOutfitToWardrobe(payload, wardrobeRef.current);
+        if (!candidateItems.length) {
+          continue;
+        }
+
+        const evaluation = evaluateDailyFitCandidate(candidateItems, outfitWeather);
+        if (evaluation.accepted) {
+          nextItems = candidateItems;
+          break;
+        }
+
+        console.warn('Rejected incoherent daily fit candidate:', evaluation.issues.join(', ') || 'unknown');
+        candidateItems.forEach((item) => {
+          const itemId = String(item?.id || '').trim();
+          if (itemId) attemptedAvoidIds.add(itemId);
+        });
+      }
+
+      if (!nextItems.length) {
         return dailyFitItems;
       }
 
-      const payload = await response.json().catch(() => null);
-      const nextItems = Array.isArray(payload?.outfit)
-        ? wardrobeRef.current.filter((item) =>
-            payload.outfit.some((outfitItem: any) => String(outfitItem?.id) === String(item?.id))
-          )
-        : [];
-
       setDailyFitItems(nextItems);
-      await persistDashboardCache(userId, {
-        outfit: nextItems,
-        outfitWeather,
-        outfitLocation,
-      });
+      await Promise.all([
+        persistDashboardCache(userId, {
+          outfit: nextItems,
+          outfitWeather,
+          outfitLocation,
+        }),
+        persistManualDailyFit({
+          userId,
+          items: nextItems,
+          outfitWeather,
+          outfitLocation,
+          context: resolvedRequest?.context ?? null,
+        }),
+      ]);
 
       return nextItems;
     } catch (error: any) {

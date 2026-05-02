@@ -61,7 +61,8 @@ export default function TryOnSelectedTray({
 
 const styles = StyleSheet.create({
   row: {
-    paddingVertical: 2,
+    paddingTop: 0,
+    paddingBottom: 10,
     paddingRight: 8,
   },
   card: {

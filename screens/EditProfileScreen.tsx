@@ -1,5 +1,5 @@
 // screens/EditProfileScreen.tsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   View,
@@ -8,19 +8,19 @@ import {
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  SafeAreaView,
   Alert,
   Image,
   KeyboardAvoidingView,
   Platform
 } from 'react-native';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../lib/supabase';
 import { resolvePrivateMediaUrl } from '../lib/privateMedia';
-import { colors } from '../lib/theme';
+import { colors, shadows, spacing, typography } from '../lib/theme';
 
 const PROFILE_SELECT_FIELDS = 'id, full_name, username, bio, style_tags, avatar_url, avatar_path';
 const PROFILE_LEGACY_SELECT_FIELDS = 'id, full_name, username, bio, style_tags, avatar_url';
@@ -85,6 +85,7 @@ async function readImageBytes(uri: string) {
 export default function EditProfileScreen() {
   const navigation = useNavigation();
   const isFocused = useIsFocused();
+  const insets = useSafeAreaInsets();
 
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -98,6 +99,17 @@ export default function EditProfileScreen() {
   const [avatarPath, setAvatarPath] = useState('');
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState('');
   const [newTag, setNewTag] = useState('');
+
+  const normalizedUsernamePreview = useMemo(() => normalizeUsername(username), [username]);
+  const heroSubtitle = normalizedUsernamePreview
+    ? `Editing @${normalizedUsernamePreview}`
+    : 'Update the identity, photo, and style signature attached to your closet.';
+  const avatarInitials = useMemo(() => {
+    const source = String(fullName || username || 'CM').trim();
+    if (!source) return 'CM';
+    const parts = source.split(/\s+/).filter(Boolean).slice(0, 2);
+    return parts.map((part) => part.charAt(0).toUpperCase()).join('') || source.slice(0, 2).toUpperCase();
+  }, [fullName, username]);
 
   const fetchProfile = async () => {
     try {
@@ -294,7 +306,7 @@ export default function EditProfileScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
         <View style={styles.loadingWrap}>
           <ActivityIndicator size="large" color={colors.textPrimary} />
         </View>
@@ -303,155 +315,399 @@ export default function EditProfileScreen() {
   }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}
+        style={styles.flex}
       >
-        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          contentContainerStyle={[
+            styles.container,
+            { paddingBottom: 142 + Math.max(insets.bottom, spacing.sm) },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.headerRow}>
+            <TouchableOpacity activeOpacity={0.84} onPress={() => navigation.goBack()} style={styles.iconButton}>
+              <Ionicons name="chevron-back" size={21} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <View style={styles.headerSpacer} />
+          </View>
+
+          <Text style={styles.eyebrow}>Profile Studio</Text>
           <Text style={styles.title}>Edit Profile</Text>
+          <Text style={styles.subtitle}>{heroSubtitle}</Text>
 
-          <TouchableOpacity onPress={pickImageAndUpload}>
-            <Image
-              source={{ uri: avatarPreviewUrl || avatarUrl || 'https://i.pravatar.cc/150?img=3' }}
-              style={styles.avatar}
-            />
-            {uploadingAvatar ? (
-              <View style={styles.avatarOverlay}>
-                <ActivityIndicator color="#fff" />
+          <View style={styles.heroCard}>
+            <TouchableOpacity activeOpacity={0.9} onPress={pickImageAndUpload} style={styles.avatarButton}>
+              {avatarPreviewUrl || avatarUrl ? (
+                <Image
+                  source={{ uri: avatarPreviewUrl || avatarUrl }}
+                  style={styles.avatar}
+                />
+              ) : (
+                <View style={styles.avatarFallback}>
+                  <Text style={styles.avatarFallbackText}>{avatarInitials}</Text>
+                </View>
+              )}
+              <View style={styles.avatarBadge}>
+                <Ionicons name="camera-outline" size={15} color={colors.textOnAccent} />
               </View>
-            ) : null}
-          </TouchableOpacity>
+              {uploadingAvatar ? (
+                <View style={styles.avatarOverlay}>
+                  <ActivityIndicator color={colors.textOnAccent} />
+                </View>
+              ) : null}
+            </TouchableOpacity>
 
-          <Text style={styles.label}>Full Name</Text>
-          <TextInput
-            value={fullName}
-            onChangeText={setFullName}
-            style={styles.input}
-            placeholder="Full name"
-          />
+            <View style={styles.heroCopy}>
+              <Text style={styles.heroName}>{fullName || 'Shape your profile identity.'}</Text>
+              <Text style={styles.heroHandle}>
+                {normalizedUsernamePreview ? `@${normalizedUsernamePreview}` : 'Add the name and handle that will anchor your closet.'}
+              </Text>
+              <TouchableOpacity activeOpacity={0.86} onPress={pickImageAndUpload} style={styles.heroAction}>
+                <Ionicons name="images-outline" size={15} color={colors.textPrimary} />
+                <Text style={styles.heroActionText}>{uploadingAvatar ? 'Uploading Photo' : 'Change Photo'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
-          <Text style={styles.label}>Username</Text>
-          <TextInput
-            value={username}
-            onChangeText={setUsername}
-            style={styles.input}
-            placeholder="Username"
-          />
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionEyebrow}>Identity</Text>
 
-          <Text style={styles.label}>Bio</Text>
-          <TextInput
-            value={bio}
-            onChangeText={setBio}
-            style={[styles.input, { height: 80 }]}
-            placeholder="Tell us about your style..."
-            multiline
-          />
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Full Name</Text>
+              <TextInput
+                value={fullName}
+                onChangeText={setFullName}
+                style={styles.input}
+                placeholder="Enter your full name"
+                placeholderTextColor={colors.textMuted}
+              />
+            </View>
 
-          <Text style={styles.label}>Style Tags</Text>
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Username</Text>
+              <TextInput
+                value={username}
+                onChangeText={setUsername}
+                style={styles.input}
+                placeholder="Choose a username"
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.helperText}>
+                {normalizedUsernamePreview
+                  ? `Will appear as @${normalizedUsernamePreview}`
+                  : 'Use 3 to 20 lowercase letters, numbers, periods, or underscores.'}
+              </Text>
+            </View>
+          </View>
 
-          <View style={styles.tagInputRow}>
-            <TextInput
-              placeholder="Add a tag..."
-              value={newTag}
-              onChangeText={setNewTag}
-              style={styles.tagInput}
-              placeholderTextColor={colors.textMuted}
-              returnKeyType="done"
-              onSubmitEditing={() => {
-                if (newTag.trim() && !styleTags.includes(newTag.trim())) {
-                  setStyleTags([...styleTags, newTag.trim()]);
-                  setNewTag('');
-                }
-              }}
-            />
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionEyebrow}>Style Notes</Text>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Bio</Text>
+              <TextInput
+                value={bio}
+                onChangeText={setBio}
+                style={[styles.input, styles.multilineInput]}
+                placeholder="Describe your personal style, favorite silhouettes, or what you shop for."
+                placeholderTextColor={colors.textMuted}
+                multiline
+                textAlignVertical="top"
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Style Tags</Text>
+
+              <View style={styles.tagInputRow}>
+                <TextInput
+                  placeholder="Add a tag..."
+                  value={newTag}
+                  onChangeText={setNewTag}
+                  style={styles.tagInput}
+                  placeholderTextColor={colors.textMuted}
+                  returnKeyType="done"
+                  onSubmitEditing={() => {
+                    if (newTag.trim() && !styleTags.includes(newTag.trim())) {
+                      setStyleTags([...styleTags, newTag.trim()]);
+                      setNewTag('');
+                    }
+                  }}
+                />
+                <TouchableOpacity
+                  onPress={() => {
+                    if (newTag.trim() && !styleTags.includes(newTag.trim())) {
+                      setStyleTags([...styleTags, newTag.trim()]);
+                      setNewTag('');
+                    }
+                  }}
+                  style={styles.addTagBtn}
+                >
+                  <Ionicons name="add" size={18} color={colors.textOnAccent} />
+                </TouchableOpacity>
+              </View>
+
+              {styleTags.length ? (
+                <View style={styles.tagContainer}>
+                  {styleTags.map((tag) => (
+                    <TouchableOpacity
+                      key={tag}
+                      onPress={() => setStyleTags(styleTags.filter((t) => t !== tag))}
+                      style={styles.tagPillSelected}
+                      activeOpacity={0.86}
+                    >
+                      <Text style={styles.tagTextSelected}>{tag}</Text>
+                      <Ionicons name="close" size={14} color={colors.textPrimary} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.helperText}>Add a few tags that define the energy of your closet.</Text>
+              )}
+            </View>
+          </View>
+        </ScrollView>
+
+        <View
+          pointerEvents="box-none"
+          style={[styles.footerDockWrap, { paddingBottom: Math.max(insets.bottom, spacing.sm) + spacing.xs }]}
+        >
+          <View style={styles.footerDock}>
             <TouchableOpacity
-              onPress={() => {
-                if (newTag.trim() && !styleTags.includes(newTag.trim())) {
-                  setStyleTags([...styleTags, newTag.trim()]);
-                  setNewTag('');
-                }
-              }}
-              style={styles.addTagBtn}
+              style={[styles.saveBtn, saving && styles.saveBtnDisabled]}
+              onPress={handleSave}
+              disabled={saving}
+              activeOpacity={0.9}
             >
-              <Ionicons name="add" size={20} color={colors.textOnAccent} />
+              {saving ? (
+                <ActivityIndicator size="small" color={colors.textOnAccent} />
+              ) : (
+                <Text style={styles.saveText}>Save Changes</Text>
+              )}
             </TouchableOpacity>
           </View>
-
-          <View style={styles.tagContainer}>
-            {styleTags.map((tag) => (
-              <TouchableOpacity
-                key={tag}
-                onPress={() => setStyleTags(styleTags.filter((t) => t !== tag))}
-                style={styles.tagPillSelected}
-              >
-                <Text style={styles.tagTextSelected}>{tag} ✕</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <TouchableOpacity
-            style={[styles.saveBtn, saving && styles.saveBtnDisabled]}
-            onPress={handleSave}
-            disabled={saving}
-          >
-            <Text style={styles.saveText}>{saving ? 'Saving…' : 'Save Changes'}</Text>
-          </TouchableOpacity>
-        </ScrollView>
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  flex: {
+    flex: 1,
+  },
   container: {
-    padding: 24,
-    paddingBottom: 80,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
   },
   loadingWrap: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  title: {
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: 20,
-    color: colors.textPrimary,
-    alignSelf: 'center',
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.lg,
   },
-  avatar: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    alignSelf: 'center',
-    marginBottom: 24,
-    backgroundColor: colors.surfaceContainer,
-  },
-  avatarOverlay: {
-    position: 'absolute',
-    alignSelf: 'center',
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+  iconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  label: {
-    fontSize: 14,
+  headerSpacer: {
+    width: 40,
+    height: 40,
+  },
+  eyebrow: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    color: colors.textMuted,
+    fontFamily: typography.fontFamily,
+  },
+  title: {
+    marginTop: 8,
+    fontSize: 38,
+    lineHeight: 42,
+    fontWeight: '700',
     color: colors.textPrimary,
-    fontWeight: '500',
-    marginBottom: 6,
-    marginTop: 18,
+    fontFamily: 'Georgia',
+  },
+  subtitle: {
+    marginTop: 10,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.textSecondary,
+    fontFamily: typography.fontFamily,
+  },
+  heroCard: {
+    marginTop: spacing.lg,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.lg - 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    ...shadows.card,
+  },
+  avatarButton: {
+    position: 'relative',
+  },
+  avatar: {
+    width: 108,
+    height: 108,
+    borderRadius: 54,
+    backgroundColor: colors.surfaceContainer,
+  },
+  avatarFallback: {
+    width: 108,
+    height: 108,
+    borderRadius: 54,
+    backgroundColor: colors.surfaceContainer,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarFallbackText: {
+    color: colors.textPrimary,
+    fontSize: 28,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    fontFamily: 'Georgia',
+  },
+  avatarBadge: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.accent,
+    borderWidth: 2,
+    borderColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarOverlay: {
+    position: 'absolute',
+    inset: 0,
+    borderRadius: 54,
+    backgroundColor: 'rgba(28, 28, 28, 0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  heroName: {
+    fontSize: 24,
+    lineHeight: 28,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    fontFamily: 'Georgia',
+  },
+  heroHandle: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textSecondary,
+    fontFamily: typography.fontFamily,
+  },
+  heroAction: {
+    alignSelf: 'flex-start',
+    marginTop: 14,
+    minHeight: 38,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceContainerLowest,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  heroActionText: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: typography.fontFamily,
+  },
+  sectionCard: {
+    marginTop: spacing.lg,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.lg - 2,
+    ...shadows.card,
+  },
+  sectionEyebrow: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '700',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+    color: colors.textMuted,
+    marginBottom: spacing.md,
+    fontFamily: typography.fontFamily,
+  },
+  fieldGroup: {
+    marginTop: spacing.sm,
+  },
+  label: {
+    fontSize: 11,
+    lineHeight: 14,
+    color: colors.textMuted,
+    fontWeight: '700',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontFamily: typography.fontFamily,
   },
   input: {
     backgroundColor: colors.surfaceContainer,
-    borderRadius: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 15,
     fontSize: 15,
     color: colors.textPrimary,
+    fontFamily: typography.fontFamily,
+  },
+  multilineInput: {
+    minHeight: 120,
+    paddingTop: 15,
+  },
+  helperText: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textSecondary,
+    fontFamily: typography.fontFamily,
   },
   tagContainer: {
     flexDirection: 'row',
@@ -459,62 +715,78 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 12,
   },
-  tagPill: {
+  tagInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    gap: 8,
+  },
+  tagInput: {
+    flex: 1,
     backgroundColor: colors.surfaceContainer,
-    borderRadius: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 14,
+    color: colors.textPrimary,
+    fontFamily: typography.fontFamily,
+  },
+  addTagBtn: {
+    width: 50,
+    height: 50,
+    backgroundColor: colors.accent,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tagPillSelected: {
+    minHeight: 38,
+    borderRadius: 16,
     paddingVertical: 8,
     paddingHorizontal: 14,
-  },
-tagPillSelected: {
-  backgroundColor: colors.accent,
-  borderRadius: 14,
-  paddingVertical: 6,
-  paddingHorizontal: 14,
-  marginBottom: 8,
-},
-  tagText: {
-    fontSize: 14,
-    color: colors.textSecondary,
-  },
- tagTextSelected: {
-  color: colors.textOnAccent,
-  fontWeight: '500',
-  fontSize: 13,
-},
-  saveBtn: {
-    marginTop: 36,
-    backgroundColor: colors.textPrimary,
-    paddingVertical: 16,
-    borderRadius: 14,
+    backgroundColor: colors.surfaceContainerLowest,
+    borderWidth: 1,
+    borderColor: colors.border,
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
+  },
+  tagTextSelected: {
+    color: colors.textPrimary,
+    fontWeight: '700',
+    fontSize: 13,
+    fontFamily: typography.fontFamily,
+  },
+  footerDockWrap: {
+    position: 'absolute',
+    left: spacing.lg,
+    right: spacing.lg,
+    bottom: 0,
+  },
+  footerDock: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: 'rgba(250, 250, 255, 0.98)',
+    padding: 10,
+    ...shadows.card,
+  },
+  saveBtn: {
+    minHeight: 54,
+    backgroundColor: colors.accent,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   saveBtnDisabled: {
     opacity: 0.7,
   },
   saveText: {
-    color: '#fff',
+    color: colors.textOnAccent,
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
+    fontFamily: typography.fontFamily,
   },
-  tagInputRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  marginTop: 12,
-  marginBottom: 10,
-  gap: 8,
-},
-tagInput: {
-  flex: 1,
-  backgroundColor: colors.surfaceContainer,
-  borderRadius: 14,
-  paddingHorizontal: 14,
-  paddingVertical: 10,
-  fontSize: 14,
-  color: colors.textPrimary,
-},
-addTagBtn: {
-  backgroundColor: colors.textPrimary,
-  borderRadius: 14,
-  padding: 10,
-},
 });
